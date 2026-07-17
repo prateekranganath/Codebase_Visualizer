@@ -1,0 +1,32 @@
+{
+  "name": "visualizer-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "dagre": "^0.8.5",
+    "lucide-react": "^1.17.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "reactflow": "^11.11.4",
+    "tailwind-merge": "^3.6.0",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@types/dagre": "^0.7.52",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

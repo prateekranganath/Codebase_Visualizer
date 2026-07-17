@@ -1,0 +1,27 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run backend (reload, ignore uploads)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "uvicorn",
+        "backend.main:app",
+        "--reload",
+        "--reload-dir",
+        "${workspaceFolder}\\backend",
+        "--port",
+        "8000"
+      ],
+      "options": {
+        "env": {
+          "WATCHFILES_IGNORE_PATHS": "${workspaceFolder}\\uploaded_workspaces;${workspaceFolder}\\.venv;${env:APP_UPLOADS_DIR};${env:UPLOADS_DIR};${env:LOCALAPPDATA}\\codebase_visualizer\\uploaded_workspaces"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+htmlcov/
+.coverage
+.coverage.*
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Node / frontend
+node_modules/
+dist/
+*.tsbuildinfo
+Visualizer/frontend/node_modules/
+Visualizer/frontend/dist/
+Visualizer/frontend/tsconfig.tsbuildinfo
+
+# Runtime data
+vector_store/
+graph_store/
+uploaded_workspaces/
+backend/graph_store/
+backend/vector_store/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
