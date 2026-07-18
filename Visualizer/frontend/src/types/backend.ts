@@ -158,6 +158,7 @@ export interface GraphNodeData {
   type?: string;
   color?: string;
   group?: string;
+  path?: string;
   x?: number;
   y?: number;
   size?: number;

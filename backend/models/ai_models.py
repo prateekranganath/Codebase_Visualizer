@@ -22,7 +22,7 @@ class ExplainRequest(BaseModel):
 	)
 	file_path: str
 	top_k: int = Field(5, ge=1, le=50)
-	max_tokens: int = Field(512, ge=1, le=4096)
+	max_tokens: int = Field(1024, ge=1, le=4096)
 	temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
 
 

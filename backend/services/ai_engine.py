@@ -356,8 +356,14 @@ class AIEngine:
 		"""Best-effort extraction of a JSON object from an LLM response."""
 		if not text:
 			return None
+
+		# Try to extract content inside markdown code fences first.
+		code_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+		if code_block_match:
+			return code_block_match.group(1).strip()
+
 		clean = text.strip()
-		# Remove common Markdown code fences.
+		# Remove common Markdown code fences if any remain.
 		clean = re.sub(r"^```(?:json)?\s*", "", clean, flags=re.IGNORECASE)
 		clean = re.sub(r"\s*```$", "", clean)
 
@@ -385,11 +391,12 @@ class AIEngine:
 		*,
 		root_dir: Optional[str] = None,
 		top_k: int = 5,
-		max_tokens: int = 512,
+		max_tokens: int = 1024,
 		temperature: Optional[float] = None,
 	) -> Dict[str, Any]:
 		"""Return a structured, frontend-safe explanation for a file."""
 		file_contents = ""
+		rag_context: Dict[str, Any] = {}
 		if root_dir:
 			try:
 				# Treat file_path as workspace-relative when root_dir is provided.
@@ -403,10 +410,24 @@ class AIEngine:
 			except Exception:
 				file_contents = ""
 
+		if file_contents or file_path:
+			retrieval_query = f"{file_path}\n\n{file_contents[:2000]}" if file_contents else file_path
+			rag_context = self.build_context(retrieval_query, top_k=top_k)
+
 		system_prompt = self._system_prompt("explain")
 		prompt = (
-			"Return JSON only (no markdown).\n"
-			"Schema:\n"
+			"Provide a structured explanation for the following file based on its contents and additional code context.\n\n"
+			f"File path: {file_path}\n\n"
+			"Additional code context:\n"
+			f"{self._format_context_block(rag_context) if rag_context else 'No additional code context found.'}\n\n"
+			"File contents:\n"
+			f"{file_contents}\n\n"
+			"Rules:\n"
+			"- summary: <= 3 sentences\n"
+			"- concise bullets; no repetition\n"
+			"- use the additional code context when it is relevant\n"
+			"- do not mention analysis process or any context/retrieval mechanics\n\n"
+			"You must return a valid JSON object matching this schema:\n"
 			"{\n"
 			"  \"summary\": string,\n"
 			"  \"responsibilities\": [string],\n"
@@ -415,13 +436,7 @@ class AIEngine:
 			"  \"risks\": [string],\n"
 			"  \"insights\": [string]\n"
 			"}\n\n"
-			"Rules:\n"
-			"- summary: <= 3 sentences\n"
-			"- concise bullets; no repetition\n"
-			"- do not mention analysis process or any context/retrieval mechanics\n\n"
-			f"File path: {file_path}\n\n"
-			"File contents:\n"
-			f"{file_contents}\n"
+			"CRITICAL: Output ONLY the raw JSON object. Do not include any introduction, explanation, markdown formatting, or markdown code blocks (such as ```json). The response must start with '{' and end with '}'."
 		)
 
 		text = self.callLLM(
@@ -432,6 +447,30 @@ class AIEngine:
 			task="explain",
 		)
 		parsed = self._parse_json_object(text)
+		if parsed is None and text.strip():
+			repair_prompt = (
+				"Convert the following explanation into valid JSON only. "
+				"Return no markdown, no commentary, and no code fences.\n"
+				"Schema:\n"
+				"{\n"
+				"  \"summary\": string,\n"
+				"  \"responsibilities\": [string],\n"
+				"  \"key_components\": [{\"name\": string, \"role\": string}],\n"
+				"  \"dependencies\": [string],\n"
+				"  \"risks\": [string],\n"
+				"  \"insights\": [string]\n"
+				"}\n\n"
+				"Original output:\n"
+				f"{text}"
+			)
+			repaired_text = self.callLLM(
+				repair_prompt,
+				system_prompt="You are a strict JSON repair engine. Output JSON only.",
+				max_tokens=max(256, min(max_tokens, 512)),
+				temperature=0.0,
+				task="explain",
+			)
+			parsed = self._parse_json_object(repaired_text)
 		if parsed is None:
 			payload = {
 				"summary": "File explanation unavailable in structured form.",
@@ -462,7 +501,7 @@ class AIEngine:
 			**payload,
 			"text": "\n".join([line for line in text_lines if line]).strip(),
 			"mode": "explain",
-			"context": {"file_path": file_path, "root_dir": root_dir},
+			"context": {"file_path": file_path, "root_dir": root_dir, "rag_context": rag_context},
 			"provider": self.llm_config.provider,
 			"model": self.llm_config.model,
 		}
@@ -512,7 +551,10 @@ class AIEngine:
 		def is_retryable_status(status: Optional[int]) -> bool:
 			if status is None:
 				return False
-			return status in {408, 429} or status >= 500
+			# OpenRouter and other OpenAI-compatible providers can surface a 404
+			# when a model alias is unavailable. Treat that as retryable so we can
+			# fall through to the next configured model or fallback provider.
+			return status in {404, 408, 429} or status >= 500
 
 		last_error: Optional[BaseException] = None
 		model_candidates = _task_model_candidates(task)

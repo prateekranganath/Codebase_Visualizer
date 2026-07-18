@@ -78,7 +78,7 @@ class AppSettings:
 	llm_provider: str = "openai"
 	llm_model: str = "gpt-4o-mini"
 	llm_model_answer: str = "gpt-4o-mini"
-	llm_model_teach: str = "gpt-4o-mini"
+	llm_model_teach: str = "poolside/laguna-xs-2.1:free"
 	llm_model_explain: str = "gpt-4o-mini"
 	llm_model_refactor: str = "gpt-4o-mini"
 	llm_api_key: Optional[str] = None

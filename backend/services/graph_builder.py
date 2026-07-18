@@ -65,9 +65,7 @@ class CodeGraphBuilder:
 
 		# Level 1+: imports
 		for imp in module_data.get("imports", []) or []:
-			if imp.get("type") == "import":
-				imported = imp.get("module")
-			elif imp.get("type") == "from_import":
+			if imp.get("type") in {"import", "from_import", "require", "dynamic_import"}:
 				imported = imp.get("module")
 			else:
 				imported = None

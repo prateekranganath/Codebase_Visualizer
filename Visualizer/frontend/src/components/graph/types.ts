@@ -14,6 +14,7 @@ export type NodeMetadata = {
 export type GraphNodeUiData = {
   label: string;
   kind: GraphNodeKind;
+  path?: string;
   dependencyCount?: number;
   isExpanded?: boolean;
   isFocused?: boolean;

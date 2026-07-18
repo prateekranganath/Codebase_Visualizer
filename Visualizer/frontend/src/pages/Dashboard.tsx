@@ -242,7 +242,13 @@ export default function Dashboard() {
             nodes={nodes}
             edges={edges}
             selectedNodeId={selectedNodeId}
-            onNodeSelect={setSelectedNodeId}
+            onNodeSelect={(nodeId, nodePath) => {
+              setSelectedNodeId(nodeId);
+              if (nodePath) {
+                setSelectedRelativePath(nodePath);
+                setCurrentRefactorTarget(nodePath);
+              }
+            }}
             onNodeOpen={(nodeId) => {
               setSelectedNodeId(nodeId);
               toast.addToast(`Open details for ${nodeId}`, 'info');

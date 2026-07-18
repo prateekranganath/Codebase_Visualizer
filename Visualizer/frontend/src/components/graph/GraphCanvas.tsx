@@ -26,7 +26,7 @@ type GraphCanvasProps = {
   nodes: GraphNodeData[];
   edges: GraphEdgeData[];
   selectedNodeId: string | null;
-  onNodeSelect: (nodeId: string) => void;
+  onNodeSelect: (nodeId: string, nodePath?: string) => void;
   onNodeOpen?: (nodeId: string) => void;
   loading?: boolean;
 };
@@ -122,6 +122,18 @@ function layoutModules(
     seen.add(key);
     return true;
   });
+
+  if (uniqueEdges.length === 0) {
+    return new Map(
+      moduleIds.map((id, index) => {
+        const cols = Math.max(1, Math.ceil(Math.sqrt(moduleIds.length)));
+        const col = index % cols;
+        const row = Math.floor(index / cols);
+        const size = sizeById.get(id) ?? NODE_SIZES.module;
+        return [id, { x: col * (size.width + 80), y: row * (size.height + 60) }];
+      }),
+    );
+  }
 
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
@@ -614,6 +626,7 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen }: G
       const data: GraphNodeUiData = {
         label: node.label ?? node.id,
         kind: 'module',
+        path: node.path,
         dependencyCount: dependencyCounts.get(node.id) ?? 0,
         isExpanded: Boolean(expandedModules[node.id]),
         isFocused: focusedNodeId === node.id,
@@ -658,6 +671,7 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen }: G
         const data: GraphNodeUiData = {
           label: child.label ?? child.id,
           kind,
+          path: child.path,
           isExpanded: kind === 'class' ? Boolean(expandedClasses[child.id]) : undefined,
           isFocused: focusedNodeId === child.id,
           isRelated: related.has(child.id),
@@ -761,7 +775,7 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen }: G
   }, [viewportKey, flowNodes.length, nodesInitialized, reactFlow]);
 
   const handleNodeClick = (_: unknown, node: Node<GraphNodeUiData>) => {
-    onNodeSelect(node.id);
+    onNodeSelect(node.id, node.data.path);
     const kind = node.data.kind;
     if (kind === 'module') {
       toggleModule(node.id);
