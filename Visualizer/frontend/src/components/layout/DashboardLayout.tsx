@@ -1,21 +1,28 @@
 import type { ReactNode } from 'react';
 
 type DashboardLayoutProps = {
+  navbar: ReactNode;
   sidebar: ReactNode;
-  graph: ReactNode;
-  panel: ReactNode;
-  consolePane: ReactNode;
+  graphWorkspace: ReactNode;
+  statusBar: ReactNode;
 };
 
-export default function DashboardLayout({ sidebar, graph, panel, consolePane }: DashboardLayoutProps) {
+/**
+ * Full-viewport flex shell:
+ *   Navbar (fixed height)
+ *   ├─ Sidebar (collapsible)
+ *   └─ GraphWorkspace (fills remaining space)
+ *   StatusBar (fixed height)
+ */
+export default function DashboardLayout({ navbar, sidebar, graphWorkspace, statusBar }: DashboardLayoutProps) {
   return (
-    <div className="dashboard-shell">
-      <div className="dashboard-shell__top">{sidebar}</div>
-      <div className="dashboard-shell__main">
-        <div className="dashboard-shell__graph">{graph}</div>
-        <div className="dashboard-shell__panel">{panel}</div>
+    <div className="app-shell">
+      {navbar}
+      <div className="workspace-area">
+        {sidebar}
+        {graphWorkspace}
       </div>
-      <div className="dashboard-shell__console">{consolePane}</div>
+      {statusBar}
     </div>
   );
 }

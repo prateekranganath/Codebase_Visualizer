@@ -29,6 +29,9 @@ type GraphCanvasProps = {
   onNodeSelect: (nodeId: string, nodePath?: string) => void;
   onNodeOpen?: (nodeId: string) => void;
   loading?: boolean;
+  showMinimap?: boolean;
+  onToggleMinimap?: () => void;
+  onExpandNeighborhood?: () => void;
 };
 
 const nodeTypes = {
@@ -329,7 +332,7 @@ function buildChildrenMap(parentById: Map<string, string>) {
   return children;
 }
 
-function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen }: GraphCanvasProps) {
+function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, showMinimap, onToggleMinimap, onExpandNeighborhood }: GraphCanvasProps) {
   const {
     showFunctions,
     showImports,
@@ -796,30 +799,36 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen }: G
 
   return (
     <div className="absolute inset-0 min-h-0 min-w-0" style={{ width: '100%', height: '100%' }}>
-      <div className="absolute left-6 right-6 top-6 z-20 flex flex-wrap items-center justify-between gap-3">
+      <div className="graph-filters-bar">
         <GraphFilters />
-        <div className="flex items-center gap-3">
-          <div className="rounded-full border border-slate-700/70 bg-slate-950/80 px-3 py-1 text-xs text-slate-300">
-            Nodes {flowNodes.length} · Edges {flowEdges.length}
-          </div>
-          <GraphControls onResetFocus={resetFocus} />
-        </div>
       </div>
 
-      <div className="absolute bottom-6 left-6 z-20">
+      <div className="absolute bottom-6 left-14 z-20">
         <GraphLegend />
       </div>
 
-      <div className="absolute bottom-6 right-6 z-20">
-        <MinimapPanel />
-      </div>
+      {showMinimap && (
+        <div className="absolute bottom-20 right-6 z-20">
+          <MinimapPanel />
+        </div>
+      )}
+
+      {!selectedNodeId && (
+        <GraphControls
+          onResetFocus={resetFocus}
+          onExpandNeighborhood={onExpandNeighborhood}
+          selectedNodeId={selectedNodeId}
+          showMinimap={showMinimap}
+          onToggleMinimap={onToggleMinimap}
+        />
+      )}
 
       <ReactFlow
         nodes={flowNodes}
         edges={flowEdges}
         nodeTypes={nodeTypes}
-        minZoom={0.2}
-        maxZoom={1.6}
+        minZoom={0.15}
+        maxZoom={2.0}
         nodesDraggable={false}
         nodesConnectable={false}
         onNodeClick={handleNodeClick}
@@ -827,68 +836,71 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen }: G
         onPaneClick={resetFocus}
         style={{ width: '100%', height: '100%' }}
       >
-        <Background gap={24} color="rgba(124, 92, 255, 0.14)" />
+        <Background gap={24} color="rgba(124, 92, 255, 0.12)" />
       </ReactFlow>
     </div>
   );
 }
 
-export default function GraphCanvas({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, loading }: GraphCanvasProps) {
+export default function GraphCanvas({
+  nodes,
+  edges,
+  selectedNodeId,
+  onNodeSelect,
+  onNodeOpen,
+  loading,
+  showMinimap,
+  onToggleMinimap,
+  onExpandNeighborhood,
+}: GraphCanvasProps) {
   if (loading) {
     return (
-      <section className="graph-canvas">
-        <div className="panel-header">
-          <div>
-            <div className="panel-header__eyebrow">Interactive Node Graph</div>
-            <h2>Dependency map</h2>
+      <div className="graph-canvas">
+        <div className="graph-canvas__surface">
+          <div className="graph-canvas__overlay">
+            <div className="graph-canvas__overlay-icon">
+              <span style={{ fontSize: '1.4rem' }}>⬡</span>
+            </div>
+            <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--muted)' }}>Building dependency graph…</p>
+            <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--muted)', opacity: 0.7 }}>Analyzing project structure</p>
           </div>
         </div>
-        <div className="graph-canvas__surface">
-          <GraphSkeleton />
-        </div>
-      </section>
+      </div>
     );
   }
 
   if (nodes.length === 0) {
     return (
-      <section className="graph-canvas">
-        <div className="panel-header">
-          <div>
-            <div className="panel-header__eyebrow">Interactive Node Graph</div>
-            <h2>Dependency map</h2>
+      <div className="graph-canvas">
+        <div className="graph-canvas__surface">
+          <div className="graph-canvas__overlay">
+            <div className="graph-canvas__overlay-icon">
+              <span style={{ fontSize: '1.4rem' }}>📂</span>
+            </div>
+            <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--muted)' }}>No graph data yet</p>
+            <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--muted)', opacity: 0.7 }}>
+              Upload a project or sync to build the graph
+            </p>
           </div>
         </div>
-        <div className="graph-canvas__surface flex items-center justify-center text-center text-slate-400">
-          <div>
-            <p className="mb-2 text-sm">No graph data available</p>
-            <p className="text-xs text-slate-500">Select a file or refresh the project</p>
-          </div>
-        </div>
-      </section>
+      </div>
     );
   }
 
   return (
-    <section className="graph-canvas">
-      <div className="panel-header">
-        <div>
-          <div className="panel-header__eyebrow">Interactive Node Graph</div>
-          <h2>Dependency map</h2>
-        </div>
-      </div>
-
+    <div className="graph-canvas">
       <div className="graph-canvas__surface graph-flow">
-        <ReactFlowProvider>
-          <GraphFlow
-            nodes={nodes}
-            edges={edges}
-            selectedNodeId={selectedNodeId}
-            onNodeSelect={onNodeSelect}
-            onNodeOpen={onNodeOpen}
-          />
-        </ReactFlowProvider>
+        <GraphFlow
+          nodes={nodes}
+          edges={edges}
+          selectedNodeId={selectedNodeId}
+          onNodeSelect={onNodeSelect}
+          onNodeOpen={onNodeOpen}
+          showMinimap={showMinimap}
+          onToggleMinimap={onToggleMinimap}
+          onExpandNeighborhood={onExpandNeighborhood}
+        />
       </div>
-    </section>
+    </div>
   );
 }

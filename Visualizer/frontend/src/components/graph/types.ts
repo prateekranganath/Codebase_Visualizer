@@ -8,6 +8,8 @@ export type NodeMetadata = {
   risk?: NodeRisk;
   parent_id?: string;
   is_external?: boolean;
+  language?: string;
+  size?: number;
   [key: string]: unknown;
 };
 

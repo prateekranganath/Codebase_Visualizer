@@ -1,50 +1,59 @@
-import type { ReactNode } from 'react';
-
-export type NavbarAction = {
-  label: string;
-  shortcut?: string;
-  tone?: 'primary' | 'neutral';
-  onClick?: () => void | Promise<void>;
-};
+import type { ReactNode } from "react";
+import { HardDriveUpload, Search } from "lucide-react";
 
 type NavbarProps = {
-  title: string;
-  subtitle: string;
-  actions: NavbarAction[];
-  rightSlot?: ReactNode;
+  title?: string;
+  backendStatusNode?: ReactNode;
+  onUploadClick: () => void;
 };
 
-export default function Navbar({ title, subtitle, actions, rightSlot }: NavbarProps) {
-  const handleActionClick = async (action: NavbarAction) => {
-    if (action.onClick) {
-      await action.onClick();
-    }
-  };
-
+export default function Navbar({
+  title = "Codebase Visualizer",
+  backendStatusNode,
+  onUploadClick,
+}: NavbarProps) {
   return (
     <header className="navbar">
-      <div className="navbar__brand">
-        <div className="navbar__eyebrow">AI-Powered Codebase Visualizer</div>
-        <div>
-          <h1 className="navbar__title">{title}</h1>
-          <p className="navbar__subtitle">{subtitle}</p>
-        </div>
+
+      {/* Logo */}
+
+      <div className="navbar__logo">
+        <div className="navbar__logo-icon">⬡</div>
+
+        <h1 className="navbar__title">
+          {title}
+        </h1>
       </div>
 
-      <div className="navbar__actions">
-        {actions.map((action) => (
-          <button
-            key={action.label}
-            className={`navbar__action navbar__action--${action.tone ?? 'neutral'}`}
-            type="button"
-            onClick={() => handleActionClick(action)}
-          >
-            <span>{action.label}</span>
-            {action.shortcut ? <kbd>{action.shortcut}</kbd> : null}
-          </button>
-        ))}
-        {rightSlot}
+      {/* Global Search */}
+
+      <div className="navbar__search">
+
+        <Search size={15} />
+
+        <input
+          type="text"
+          placeholder="Search files, classes, functions..."
+        />
+
       </div>
+
+      {/* Right Actions */}
+
+      <nav className="navbar__actions">
+
+        <button
+          className="navbar__btn navbar__btn--primary"
+          onClick={onUploadClick}
+        >
+          <HardDriveUpload size={15}/>
+          Upload
+        </button>
+
+        {backendStatusNode}
+
+      </nav>
+
     </header>
   );
 }
