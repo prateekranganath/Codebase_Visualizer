@@ -15,6 +15,11 @@ export default function ModuleNode({ data, selected }: NodeProps<GraphNodeUiData
       className={`h-full w-full rounded-2xl border px-4 py-3 shadow-xl transition ${
         selected ? 'border-violet-300/80 ring-2 ring-violet-400/40' : 'border-slate-700/70'
       } ${data.isDimmed ? 'opacity-35' : 'opacity-100'} bg-transparent`}
+      style={
+        data.isSearchMatch
+          ? { boxShadow: data.isSearchActive ? '0 0 0 3px rgba(250, 204, 21, 0.95)' : '0 0 0 2px rgba(250, 204, 21, 0.55)' }
+          : undefined
+      }
     >
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
       <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />

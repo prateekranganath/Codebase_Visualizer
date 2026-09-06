@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { explainFile, getAiProvider, teachAi } from '../api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ApiError, explainFile, getAiProvider, teachAi } from '../api';
 import type { ExplainResponseModel, ProviderInfo, TeachingResponseModel } from '../types/backend';
 import { useWorkspaceStore } from '../store/workspaceStore';
 
@@ -9,21 +9,30 @@ export type AiWorkspaceState = {
   provider: ProviderInfo | null;
   aiMessage: string;
   selectedMode: 'explain' | 'teach';
+  rateLimitedUntil: number | null;
 };
 
 type UseAiWorkspaceParams = {
   projectRoot: string;
   selectedFile: string | null;
+  selectedNodeId: string | null;
   selectedNodeLabel: string | null;
 };
 
-export function useAiWorkspace({ projectRoot, selectedFile, selectedNodeLabel }: UseAiWorkspaceParams) {
+// Explain/teach are user-triggered only (via refreshExplain/refreshTeach) -- they used
+// to auto-fire on every file selection, which burns ~2 requests per click against the
+// free-tier 50/day budget for output nobody asked to see yet.
+export function useAiWorkspace({ projectRoot, selectedFile, selectedNodeId, selectedNodeLabel }: UseAiWorkspaceParams) {
   const setLoading = useWorkspaceStore((state) => state.setLoading);
   const [explanation, setExplanation] = useState<ExplainResponseModel | null>(null);
   const [teaching, setTeaching] = useState<TeachingResponseModel | null>(null);
   const [provider, setProvider] = useState<ProviderInfo | null>(null);
-  const [aiMessage, setAiMessage] = useState('AI context not loaded yet');
+  const [aiMessage, setAiMessage] = useState('Select Explain or Teach to analyze this file.');
   const [selectedMode, setSelectedMode] = useState<'explain' | 'teach'>('explain');
+  const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
+
+  const lastFetchedExplainFileRef = useRef<string | null>(null);
+  const isFetchingExplainRef = useRef<boolean>(false);
 
   useEffect(() => {
     let active = true;
@@ -52,47 +61,14 @@ export function useAiWorkspace({ projectRoot, selectedFile, selectedNodeLabel }:
     };
   }, []);
 
+  // Clear stale results when the selection changes -- no network call, just avoids
+  // showing file A's explanation while file B is selected.
   useEffect(() => {
-    let active = true;
-
-    async function loadExplanation() {
-      if (!projectRoot || !selectedFile) {
-        setExplanation(null);
-        return;
-      }
-
-      setLoading('ai', true);
-      setSelectedMode('explain');
-      setAiMessage(`Explaining ${selectedFile}`);
-
-      try {
-        const response = await explainFile({ root_dir: projectRoot, file_path: selectedFile, top_k: 5, max_tokens: 700 });
-        if (!active) {
-          return;
-        }
-
-        setExplanation(response);
-        setAiMessage(response.summary || response.text || `Explanation ready for ${selectedFile}`);
-      } catch (error) {
-        if (!active) {
-          return;
-        }
-
-        setExplanation(null);
-        setAiMessage(error instanceof Error ? error.message : 'Failed to load explanation');
-      } finally {
-        if (active) {
-          setLoading('ai', false);
-        }
-      }
-    }
-
-    void loadExplanation();
-
-    return () => {
-      active = false;
-    };
-  }, [projectRoot, selectedFile, setLoading]);
+    setExplanation(null);
+    setTeaching(null);
+    lastFetchedExplainFileRef.current = null;
+    setAiMessage(selectedFile ? 'Select Explain or Teach to analyze this file.' : 'Select a file to get started.');
+  }, [projectRoot, selectedFile]);
 
   const teachContext = useMemo(() => {
     const filePart = selectedFile ?? 'unknown file';
@@ -100,63 +76,49 @@ export function useAiWorkspace({ projectRoot, selectedFile, selectedNodeLabel }:
     return `Teach me about ${filePart} and its graph node ${nodePart}. Ask one Socratic question, then provide a hint.`;
   }, [selectedFile, selectedNodeLabel]);
 
-  useEffect(() => {
-    let active = true;
-
-    async function loadTeaching() {
-      if (!projectRoot || !selectedFile) {
-        setTeaching(null);
-        return;
-      }
-
-      try {
-        const response = await teachAi({
-          root_dir: projectRoot,
-          user_id: 'local-developer',
-          query: teachContext,
-          top_k: 5,
-          escalate_on_repeat: true,
-          max_tokens: 700,
-        });
-
-        if (!active) {
-          return;
-        }
-
-        setTeaching(response);
-      } catch {
-        if (!active) {
-          return;
-        }
-
-        setTeaching(null);
-      }
+  const reportError = useCallback((error: unknown, fallback: string) => {
+    if (error instanceof ApiError && error.isRateLimited) {
+      setRateLimitedUntil(Date.now() + (error.retryAfterSeconds ?? 30) * 1000);
     }
+    setAiMessage(error instanceof Error ? error.message : fallback);
+  }, []);
 
-    void loadTeaching();
-
-    return () => {
-      active = false;
-    };
-  }, [projectRoot, selectedFile, teachContext]);
-
-  const refreshExplain = useCallback(async () => {
+  const refreshExplain = useCallback(async (force = false) => {
     if (!selectedFile) {
       return;
     }
 
+    if (!force && lastFetchedExplainFileRef.current === selectedFile && explanation) {
+      return;
+    }
+
+    if (isFetchingExplainRef.current) {
+      return;
+    }
+
+    isFetchingExplainRef.current = true;
     setLoading('ai', true);
     setSelectedMode('explain');
+    setAiMessage(`Explaining ${selectedFile}`);
     try {
-      const response = await explainFile({ root_dir: projectRoot, file_path: selectedFile, top_k: 5, max_tokens: 700 });
+      const response = await explainFile({
+        root_dir: projectRoot,
+        file_path: selectedFile,
+        top_k: 5,
+        max_tokens: 700,
+        force_refresh: force,
+      });
+      setRateLimitedUntil(null);
       setExplanation(response);
+      lastFetchedExplainFileRef.current = selectedFile;
       setAiMessage(response.summary || response.text || `Explanation ready for ${selectedFile}`);
     } catch (error) {
-      setAiMessage(error instanceof Error ? error.message : 'Failed to refresh explanation');
+      reportError(error, 'Failed to refresh explanation');
     } finally {
+      isFetchingExplainRef.current = false;
       setLoading('ai', false);
     }
-  }, [projectRoot, selectedFile, setLoading]);
+  }, [projectRoot, selectedFile, explanation, setLoading, reportError]);
 
   const refreshTeach = useCallback(async () => {
     if (!selectedFile) {
@@ -165,23 +127,27 @@ export function useAiWorkspace({ projectRoot, selectedFile, selectedNodeLabel }:
 
     setLoading('ai', true);
     setSelectedMode('teach');
+    setAiMessage(`Preparing a question about ${selectedFile}`);
     try {
       const response = await teachAi({
         root_dir: projectRoot,
+        file_path: selectedFile,
+        node_id: selectedNodeId ?? undefined,
         user_id: 'local-developer',
         query: teachContext,
         top_k: 5,
         escalate_on_repeat: true,
         max_tokens: 700,
       });
+      setRateLimitedUntil(null);
       setTeaching(response);
-      setAiMessage(response.guidance ?? response.explanation ?? 'Teaching response ready');
+      setAiMessage(response.question || 'Teaching response ready');
     } catch (error) {
-      setAiMessage(error instanceof Error ? error.message : 'Failed to refresh teaching response');
+      reportError(error, 'Failed to refresh teaching response');
     } finally {
       setLoading('ai', false);
     }
-  }, [selectedFile, teachContext, setLoading]);
+  }, [projectRoot, selectedFile, selectedNodeId, teachContext, setLoading, reportError]);
 
   return {
     explanation,
@@ -189,6 +155,7 @@ export function useAiWorkspace({ projectRoot, selectedFile, selectedNodeLabel }:
     provider,
     aiMessage,
     selectedMode,
+    rateLimitedUntil,
     refreshExplain,
     refreshTeach,
   };

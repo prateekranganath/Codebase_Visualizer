@@ -2,47 +2,22 @@
 
 from __future__ import annotations
 
-import os
 import json
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
-from backend.config.settings import get_settings
 from backend.db.graph_store import GraphStoreRepository
 from backend.services.graph_builder import CodeGraphBuilder
 from backend.services.graph_normalizer import contains_noise_namespace
 from backend.services.parser import parse_codebase
+from backend.services.workspace_paths import is_allowed_graph_root, resolve_graph_store_root
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.deps import get_graph_builder
 
 router = APIRouter(prefix="/graph", tags=["graph"])
-
-
-def _uploads_root_candidates() -> List[Path]:
-	settings = get_settings()
-	candidates: List[Path] = []
-	configured = (os.getenv("APP_UPLOADS_DIR") or os.getenv("UPLOADS_DIR"))
-	if configured:
-		candidates.append(Path(configured).resolve())
-	local_app_data = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA")
-	if local_app_data:
-		candidates.append((Path(local_app_data) / "codebase_visualizer" / "uploaded_workspaces").resolve())
-	candidates.append(Path(settings.root_dir).resolve())
-	return candidates
-
-
-def _is_allowed_graph_root(root_dir: Path) -> bool:
-	root_dir_resolved = root_dir.resolve()
-	for candidate in _uploads_root_candidates():
-		try:
-			if root_dir_resolved.is_relative_to(candidate):
-				return True
-		except Exception:
-			continue
-	return False
 
 
 def _graph_has_noise(graph) -> bool:
@@ -52,31 +27,9 @@ def _graph_has_noise(graph) -> bool:
 	return False
 
 
-def _resolve_graph_store_root(root_dir: Path) -> Path:
-	"""Return the directory that actually owns the persisted graph for a workspace.
-
-	Uploaded archives are stored inside a wrapper directory, while the frontend
-	passes the extracted repository root back to the API. When the extracted root
-	lives under a wrapper that contains the actual graph_store, fall back to that
-	wrapper so export and save stay aligned.
-	"""
-	root = root_dir.resolve()
-	direct_graph = root / "graph_store" / "graph.json"
-	if direct_graph.exists():
-		return root
-
-	parent = root.parent
-	wrapper_manifest = parent / "workspace_manifest.json"
-	wrapper_graph = parent / "graph_store" / "graph.json"
-	if wrapper_manifest.exists() and wrapper_graph.exists():
-		return parent
-
-	return root
-
-
 @lru_cache(maxsize=128)
 def _cached_export_from_root_dir(root_dir: str, *, graph_level: int, graph_mtime_ns: int) -> dict:
-	root = _resolve_graph_store_root(Path(root_dir))
+	root = resolve_graph_store_root(root_dir)
 	repo = GraphStoreRepository(store_path=str(root / "graph_store"))
 	graph = repo.load()
 	builder = CodeGraphBuilder()
@@ -89,9 +42,9 @@ def _export_from_root_dir(root_dir: str, *, graph_level: int) -> dict:
 	root = Path(root_dir).resolve()
 	if not root.exists() or not root.is_dir():
 		raise HTTPException(status_code=404, detail="Workspace root not found")
-	if not _is_allowed_graph_root(root):
+	if not is_allowed_graph_root(root):
 		raise HTTPException(status_code=400, detail="root_dir is not an allowed workspace")
-	graph_root = _resolve_graph_store_root(root)
+	graph_root = resolve_graph_store_root(root_dir)
 
 	graph_path = graph_root / "graph_store" / "graph.json"
 	graph_mtime_ns = graph_path.stat().st_mtime_ns if graph_path.exists() else -1
@@ -142,9 +95,9 @@ def get_node(
 		root = Path(root_dir)
 		if not root.exists() or not root.is_dir():
 			raise HTTPException(status_code=404, detail="Workspace root not found")
-		if not _is_allowed_graph_root(root):
+		if not is_allowed_graph_root(root):
 			raise HTTPException(status_code=400, detail="root_dir is not an allowed workspace")
-		repo = GraphStoreRepository(store_path=str(root / "graph_store"))
+		repo = GraphStoreRepository(store_path=str(resolve_graph_store_root(root_dir) / "graph_store"))
 		graph = repo.load()
 		builder = CodeGraphBuilder()
 		builder.graph = graph
@@ -167,9 +120,9 @@ def get_dependencies(
 		root = Path(root_dir)
 		if not root.exists() or not root.is_dir():
 			raise HTTPException(status_code=404, detail="Workspace root not found")
-		if not _is_allowed_graph_root(root):
+		if not is_allowed_graph_root(root):
 			raise HTTPException(status_code=400, detail="root_dir is not an allowed workspace")
-		repo = GraphStoreRepository(store_path=str(root / "graph_store"))
+		repo = GraphStoreRepository(store_path=str(resolve_graph_store_root(root_dir) / "graph_store"))
 		graph = repo.load()
 		builder = CodeGraphBuilder()
 		builder.graph = graph
@@ -189,9 +142,9 @@ def get_dependents(
 		root = Path(root_dir)
 		if not root.exists() or not root.is_dir():
 			raise HTTPException(status_code=404, detail="Workspace root not found")
-		if not _is_allowed_graph_root(root):
+		if not is_allowed_graph_root(root):
 			raise HTTPException(status_code=400, detail="root_dir is not an allowed workspace")
-		repo = GraphStoreRepository(store_path=str(root / "graph_store"))
+		repo = GraphStoreRepository(store_path=str(resolve_graph_store_root(root_dir) / "graph_store"))
 		graph = repo.load()
 		builder = CodeGraphBuilder()
 		builder.graph = graph
@@ -213,9 +166,9 @@ def get_subgraph(
 		root = Path(root_dir)
 		if not root.exists() or not root.is_dir():
 			raise HTTPException(status_code=404, detail="Workspace root not found")
-		if not _is_allowed_graph_root(root):
+		if not is_allowed_graph_root(root):
 			raise HTTPException(status_code=400, detail="root_dir is not an allowed workspace")
-		repo = GraphStoreRepository(store_path=str(root / "graph_store"))
+		repo = GraphStoreRepository(store_path=str(resolve_graph_store_root(root_dir) / "graph_store"))
 		graph = repo.load()
 		builder = CodeGraphBuilder()
 		builder.graph = graph

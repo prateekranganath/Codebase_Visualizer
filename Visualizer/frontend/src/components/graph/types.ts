@@ -22,5 +22,7 @@ export type GraphNodeUiData = {
   isFocused?: boolean;
   isRelated?: boolean;
   isDimmed?: boolean;
+  isSearchMatch?: boolean;
+  isSearchActive?: boolean;
   metadata?: NodeMetadata;
 };

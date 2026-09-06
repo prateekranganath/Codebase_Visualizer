@@ -11,20 +11,11 @@ import { useGraphWorkspace } from '../hooks/useGraphWorkspace';
 import { useProjectWorkspace } from '../hooks/useProjectWorkspace';
 import { useAiWorkspace } from '../hooks/useAiWorkspace';
 import { useRefactorWorkspace } from '../hooks/useRefactorWorkspace';
+import { useTeachSession } from '../hooks/useTeachSession';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useToast } from '../context/ToastContext';
 import { uploadProjectWorkspace } from '../api';
 import { useGraphUiStore } from '../store/graphUiStore';
-
-const filters = ['All', 'file', 'module', 'class', 'function', 'route', 'service', 'utility'];
-
-const diffSample = `diff --git a/backend/services/ai_engine.py b/backend/services/ai_engine.py
-@@ -42,8 +42,14 @@ def build_context(query: str) -> list[str]:
--    return results
-+    ranked = sorted(results, key=lambda item: item.score, reverse=True)
-+    context = [item.snippet for item in ranked[:top_k]]
-+    return context
-`;
 
 export default function Dashboard() {
   const toast = useToast();
@@ -38,8 +29,6 @@ export default function Dashboard() {
   const selectedFile = useWorkspaceStore((s: WorkspaceStoreState) => s.selectedRelativePath);
   const backendStatus = useWorkspaceStore((s: WorkspaceStoreState) => s.backendStatus);
   const graphLevel = useGraphUiStore((s) => s.graphLevel);
-  const setSearchQuery = useWorkspaceStore((s: WorkspaceStoreState) => s.setSearchQuery);
-  const setActiveFilter = useWorkspaceStore((s: WorkspaceStoreState) => s.setActiveFilter);
   const setSelectedNodeId = useWorkspaceStore((s: WorkspaceStoreState) => s.setSelectedNodeId);
   const setSelectedRelativePath = useWorkspaceStore((s: WorkspaceStoreState) => s.setSelectedRelativePath);
   const setCurrentRefactorTarget = useWorkspaceStore((s: WorkspaceStoreState) => s.setCurrentRefactorTarget);
@@ -64,7 +53,7 @@ export default function Dashboard() {
     selectedFile,
   );
 
-  const { nodes, edges, graphMessage, selectedGraphNode, refreshGraph } = useGraphWorkspace(
+  const { nodes, edges, graphMessage, selectedGraphNode, refreshGraph, expandNeighborhood } = useGraphWorkspace(
     projectRoot,
     selectedNodeId,
     graphLevel,
@@ -80,24 +69,38 @@ export default function Dashboard() {
     });
   }, [files, searchValue, activeFilter]);
 
-  const activeNode = selectedGraphNode ?? nodes[0] ?? null;
+  // No nodes[0] fallback: with nothing selected, activeNode is genuinely null and
+  // the AI drawer/inspector render an explicit empty state instead of silently
+  // targeting an arbitrary node the user never picked.
+  const activeNode = selectedGraphNode;
   const _workspaceMessage = [rootMessage, graphMessage].filter(Boolean).join(' • ');
 
-  const { explanation, teaching, provider, aiMessage, refreshExplain, refreshTeach } = useAiWorkspace({
+  const { explanation, teaching, provider, aiMessage, rateLimitedUntil: aiRateLimitedUntil, refreshExplain, refreshTeach } = useAiWorkspace({
     projectRoot,
     selectedFile,
+    selectedNodeId,
     selectedNodeLabel: activeNode?.label ?? null,
+  });
+
+  const teachSession = useTeachSession({
+    teaching,
+    rootDir: projectRoot,
+    filePath: selectedFile,
+    nodeId: selectedNodeId,
+    resetKey: selectedFile,
   });
 
   const {
     goal,
     setGoal,
     targetFile,
+    proposal,
     proposalSummary,
     validationSummary,
     applySummary,
     refactorMessage,
-    proposedCode,
+    rateLimitedUntil: refactorRateLimitedUntil,
+    step: refactorStep,
     runProposal,
     runValidation,
     runApply,
@@ -245,11 +248,6 @@ export default function Dashboard() {
         sidebar={
           <Sidebar
             files={filteredFiles}
-            searchValue={searchValue}
-            onSearchChange={setSearchQuery}
-            activeFilter={activeFilter}
-            filters={filters}
-            onFilterChange={setActiveFilter}
             onFileSelect={(fileName: string) => {
               setSelectedRelativePath(fileName);
               setCurrentRefactorTarget(fileName);
@@ -280,6 +278,7 @@ export default function Dashboard() {
               toast.addToast(`Opened ${nodeId}`, 'info');
             }}
             loading={loading.graph}
+            onExpandNeighborhood={expandNeighborhood}
             onOpenAiDrawer={handleOpenAiDrawer}
           />
         }
@@ -313,18 +312,30 @@ export default function Dashboard() {
         provider={provider}
         loadingAi={loading.ai}
         onExplain={() => void refreshExplain()}
+        onRegenerateExplain={() => void refreshExplain(true)}
+        aiRateLimitedUntil={aiRateLimitedUntil}
         teaching={teaching}
         onTeach={() => void refreshTeach()}
+        teachHistory={teachSession.history}
+        teachAnswer={teachSession.answer}
+        onTeachAnswerChange={teachSession.setAnswer}
+        onSubmitTeachAnswer={() => void teachSession.submitAnswer()}
+        teachEvaluating={teachSession.evaluating}
+        teachError={teachSession.error}
         goal={goal}
         onGoalChange={setGoal}
         targetFile={targetFile}
         proposalSummary={proposalSummary}
         validationSummary={validationSummary}
         applySummary={applySummary}
-        diffText={proposedCode || diffSample}
+        diffText={proposal?.diff ?? ''}
+        proposalCached={proposal?.cached ?? false}
+        refactorStep={refactorStep}
         refactorMessage={refactorMessage}
         loadingRefactor={loading.refactor}
-        onPropose={runProposal}
+        refactorRateLimitedUntil={refactorRateLimitedUntil}
+        onPropose={() => void runProposal()}
+        onRegenerateProposal={() => void runProposal(true)}
         onValidate={runValidation}
         onApply={runApply}
       />

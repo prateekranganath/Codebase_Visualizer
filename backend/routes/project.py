@@ -299,9 +299,14 @@ def parse_project(payload: ProjectPathRequest = Depends()):
 
 
 @router.post("/sync", response_model=UpdateResponse)
-def sync_project_file(payload: ProjectPathRequest, update_engine: UpdateEngine = Depends(get_update_engine)):
+def sync_project_file(payload: ProjectPathRequest):
+	# root_dir lives in the request body, which Depends() cannot see at resolution
+	# time — call the workspace-scoped factory directly instead of injecting it, so
+	# this file's embeddings/graph land in (and are read back from) the right
+	# per-workspace store rather than the global default.
 	try:
 		relative_path = _normalize_relative_path(payload.root_dir, payload.relative_path)
+		update_engine = get_update_engine(payload.root_dir)
 		result = update_engine.sync_file(payload.root_dir, relative_path)
 		return UpdateResponse(**result)
 	except ValueError as exc:
@@ -357,9 +362,14 @@ def upload_workspace(
 			encoding="utf-8",
 		)
 
+		# Anchor both the graph store and the vector store at workspace_root (not
+		# repo_root, which may be a subdirectory when the archive contained a wrapper
+		# folder) — this matches the wrapper-fallback resolution in
+		# services/workspace_paths.py, so a later call with root_dir=repo_root still
+		# finds this workspace's own embeddings instead of the global default store.
 		workspace_graph_store = GraphStoreRepository(store_path=str(workspace_root / "graph_store"))
 		workspace_update_engine = UpdateEngine(
-			embedding_engine=get_embedding_engine(),
+			embedding_engine=get_embedding_engine(root_dir=str(workspace_root)),
 			graph_builder=get_graph_builder(),
 			graph_store_repo=workspace_graph_store,
 		)

@@ -14,6 +14,7 @@ type GraphWorkspaceProps = {
   onNodeSelect: (nodeId: string, nodePath?: string) => void;
   onNodeOpen?: (nodeId: string) => void;
   loading?: boolean;
+  onExpandNeighborhood?: (nodeId: string) => void;
 
   // Inspector open callback for AI chat
   onOpenAiDrawer: (tab: AIChatDrawerTab) => void;
@@ -70,6 +71,7 @@ export default function GraphWorkspace({
   onNodeSelect,
   onNodeOpen,
   loading,
+  onExpandNeighborhood,
   onOpenAiDrawer,
 }: GraphWorkspaceProps) {
   const [showMinimap, setShowMinimap] = useState(false);
@@ -79,6 +81,10 @@ export default function GraphWorkspace({
   const { label, kind, path } = getNodeInfo(nodes, selectedNodeId);
   const metadata = getMetadata(nodes, selectedNodeId);
   const { inEdges, outEdges } = buildEdgeLists(nodes, edges, selectedNodeId);
+
+  const handleExpandNeighborhood = selectedNodeId && onExpandNeighborhood
+    ? () => onExpandNeighborhood(selectedNodeId)
+    : undefined;
 
   const handleCloseInspector = () => {
     // Deselect node by calling onNodeSelect with empty — use pane click pattern
@@ -99,6 +105,7 @@ export default function GraphWorkspace({
           loading={loading}
           showMinimap={showMinimap}
           onToggleMinimap={() => setShowMinimap((v) => !v)}
+          onExpandNeighborhood={handleExpandNeighborhood}
         />
 
         {/* Contextual inspector — slides in from right on node select */}
@@ -118,6 +125,7 @@ export default function GraphWorkspace({
           showMinimap={showMinimap}
           onToggleMinimap={() => setShowMinimap((v) => !v)}
           onResetFocus={resetFocus}
+          onExpandNeighborhood={handleExpandNeighborhood}
         />
       </div>
     </ReactFlowProvider>

@@ -4,6 +4,8 @@ import type {
   LLMResponseModel,
   ProviderInfo,
   QueryRequest,
+  TeachEvaluateRequest,
+  TeachEvaluateResponseModel,
   TeachingRequest,
   TeachingResponseModel,
 } from '../types/backend';
@@ -25,6 +27,13 @@ export function explainFile(payload: ExplainRequest) {
 
 export function teachAi(payload: TeachingRequest) {
   return request<TeachingResponseModel>('/ai/teach', {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+export function teachEvaluate(payload: TeachEvaluateRequest) {
+  return request<TeachEvaluateResponseModel>('/ai/teach/evaluate', {
     method: 'POST',
     body: payload,
   });

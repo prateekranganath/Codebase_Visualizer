@@ -30,12 +30,11 @@ Write-Host "Tip: open in Explorer with: explorer `"$uploadsDir`""
 
 & $pythonExe -m uvicorn backend.main:app --reload --reload-dir (Join-Path $repoRoot "backend") --port 8000
 
-
-/*
+<#
+Usage:
 cd C:\Users\PRATEEK\Desktop\codebase_visualizer
 powershell -ExecutionPolicy Bypass -File .\scripts\run_backend_dev.ps1
-*/
 
-/*
+Default uploads directory:
 C:\Users\PRATEEK\AppData\Local\codebase_visualizer\uploaded_workspaces
-*/
+#>

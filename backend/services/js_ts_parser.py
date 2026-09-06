@@ -78,9 +78,8 @@ def _extract_calls(text_block: str) -> List[str]:
 	return sorted(set(calls))
 
 
-def parse_js_ts_module(root_dir: str, relative_path: str) -> Dict[str, Any]:
-	"""Parse a JS/TS module and return structured information using an advanced heuristic block parser."""
-	text = read_file(root_dir, relative_path)
+def parse_js_ts_string(text: str, relative_path: str, root_dir: str = "") -> Dict[str, Any]:
+	"""Parse JS/TS source code text into structured module data."""
 	lines = text.split("\n")
 
 	functions_data: List[Dict[str, Any]] = []
@@ -177,7 +176,8 @@ def parse_js_ts_module(root_dir: str, relative_path: str) -> Dict[str, Any]:
 	# Finalize any remaining block
 	finalize_block()
 
-	module_name = Path(relative_path).with_suffix("").as_posix().replace("/", ".")
+	suffix = Path(relative_path).suffix
+	module_name = (relative_path[:-len(suffix)] if suffix else relative_path).replace("/", ".").replace("\\", ".")
 	return {
 		"path": relative_path,
 		"module_name": module_name,
@@ -187,3 +187,9 @@ def parse_js_ts_module(root_dir: str, relative_path: str) -> Dict[str, Any]:
 		"functions": functions_data,
 		"classes": classes_data,
 	}
+
+
+def parse_js_ts_module(root_dir: str, relative_path: str) -> Dict[str, Any]:
+	"""Parse a JS/TS module and return structured information using an advanced heuristic block parser."""
+	text = read_file(root_dir, relative_path)
+	return parse_js_ts_string(text, relative_path, root_dir)

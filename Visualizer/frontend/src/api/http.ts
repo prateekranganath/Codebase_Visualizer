@@ -2,6 +2,24 @@ import type { ApiErrorResponse } from '../types/backend';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
+export class ApiError extends Error {
+  status: number;
+  retryAfterSeconds?: number;
+
+  constructor(message: string, status: number, body?: ApiErrorResponse | string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    if (body && typeof body === 'object' && body.detail && typeof body.detail === 'object') {
+      this.retryAfterSeconds = body.detail.retry_after_seconds ?? undefined;
+    }
+  }
+
+  get isRateLimited(): boolean {
+    return this.status === 429;
+  }
+}
+
 export type ApiRequestOptions = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   query?: Record<string, string | number | boolean | Array<string | number | boolean> | undefined>;
@@ -40,6 +58,13 @@ function readErrorMessage(error: ApiErrorResponse | string | undefined) {
     return error;
   }
 
+  if (error.detail && typeof error.detail === 'object') {
+    const seconds = error.detail.retry_after_seconds;
+    return seconds
+      ? `Rate limit reached. Try again in ${Math.ceil(seconds)}s.`
+      : 'Rate limit reached. Please wait a moment and try again.';
+  }
+
   return error.detail ?? error.message ?? error.error ?? 'Request failed';
 }
 
@@ -70,7 +95,7 @@ export async function request<T>(path: string, options: ApiRequestOptions = {}):
       errorBody = await response.text();
     }
 
-    throw new Error(readErrorMessage(errorBody));
+    throw new ApiError(readErrorMessage(errorBody), response.status, errorBody);
   }
 
   if (response.status === 204) {

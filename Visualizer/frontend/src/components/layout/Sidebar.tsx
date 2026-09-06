@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Files,
   Folder,
   File,
@@ -15,21 +16,137 @@ export type FileSummary = {
   active?: boolean;
 };
 
+type TreeNode = {
+  name: string;
+  path: string;
+  file?: FileSummary;
+  children: Map<string, TreeNode>;
+};
+
 type SidebarProps = {
   files: FileSummary[];
-
-  // Keeping these temporarily so Dashboard doesn't break.
-  // They can be removed later.
-  searchValue: string;
-  onSearchChange: (value: string) => void;
-  activeFilter: string;
-  filters: string[];
-  onFilterChange: (filter: string) => void;
-
   onFileSelect: (fileName: string) => void;
   selectedPath: string | null;
   loading?: boolean;
 };
+
+function buildTree(files: FileSummary[]): TreeNode {
+  const root: TreeNode = { name: '', path: '', children: new Map() };
+
+  files.forEach((file) => {
+    const segments = file.name.split('/').filter(Boolean);
+    let node = root;
+    segments.forEach((segment, index) => {
+      const isLeaf = index === segments.length - 1;
+      const path = segments.slice(0, index + 1).join('/');
+      let child = node.children.get(segment);
+      if (!child) {
+        child = { name: segment, path, children: new Map() };
+        node.children.set(segment, child);
+      }
+      if (isLeaf) {
+        child.file = file;
+      }
+      node = child;
+    });
+  });
+
+  return root;
+}
+
+function collectAncestorFolders(path: string | null): Set<string> {
+  const ancestors = new Set<string>();
+  if (!path) {
+    return ancestors;
+  }
+  const segments = path.split('/').filter(Boolean);
+  for (let i = 1; i < segments.length; i += 1) {
+    ancestors.add(segments.slice(0, i).join('/'));
+  }
+  return ancestors;
+}
+
+function sortChildren(children: Map<string, TreeNode>): TreeNode[] {
+  return Array.from(children.values()).sort((a, b) => {
+    const aIsFolder = a.children.size > 0 && !a.file;
+    const bIsFolder = b.children.size > 0 && !b.file;
+    if (aIsFolder !== bIsFolder) {
+      return aIsFolder ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function FolderNode({
+  node,
+  depth,
+  selectedPath,
+  onFileSelect,
+  expanded,
+  onToggle,
+}: {
+  node: TreeNode;
+  depth: number;
+  selectedPath: string | null;
+  onFileSelect: (fileName: string) => void;
+  expanded: Record<string, boolean>;
+  onToggle: (path: string, isOpen: boolean) => void;
+}) {
+  const children = sortChildren(node.children);
+  const isFile = Boolean(node.file) && node.children.size === 0;
+
+  if (isFile && node.file) {
+    const file = node.file;
+    return (
+      <button
+        type="button"
+        className={`sidebar__file ${selectedPath === file.name || file.active ? 'sidebar__file--active' : ''}`}
+        style={{ paddingLeft: 10 + depth * 14 }}
+        onClick={() => onFileSelect(file.name)}
+        title={file.name}
+      >
+        <File size={14} />
+        <span>{node.name}</span>
+      </button>
+    );
+  }
+
+  // Root-level folders (depth 0) default open; nested folders default closed
+  // unless `expanded` (which already has selected-file ancestors merged in)
+  // says otherwise.
+  const isOpen = expanded[node.path] ?? depth === 0;
+
+  return (
+    <div className="sidebar__branch">
+      <button
+        type="button"
+        className="sidebar__folder-title sidebar__folder-title--toggle"
+        style={{ paddingLeft: 10 + depth * 14 }}
+        onClick={() => onToggle(node.path, isOpen)}
+        aria-expanded={isOpen}
+      >
+        {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        <Folder size={14} />
+        <span>{node.name || 'Project Root'}</span>
+      </button>
+      {isOpen && (
+        <div className="sidebar__branch-children">
+          {children.map((child) => (
+            <FolderNode
+              key={child.path || child.name}
+              node={child}
+              depth={depth + 1}
+              selectedPath={selectedPath}
+              onFileSelect={onFileSelect}
+              expanded={expanded}
+              onToggle={onToggle}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Sidebar({
   files,
@@ -40,20 +157,26 @@ export default function Sidebar({
   const [collapsed, setCollapsed] = useState(
     () => window.innerWidth <= 1024
   );
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const groupedFiles = files.reduce((acc, file) => {
-    const folder = file.name.includes('/')
-      ? file.name.substring(0, file.name.lastIndexOf('/'))
-      : 'Project Root';
+  const tree = useMemo(() => buildTree(files), [files]);
+  // Folders on the path to the selected file are always shown open, even before
+  // the user has manually toggled anything, so selecting a nested file (e.g. from
+  // the graph) doesn't leave it hidden inside a collapsed folder.
+  const ancestorFolders = useMemo(() => collectAncestorFolders(selectedPath), [selectedPath]);
+  const effectiveExpanded = useMemo(() => {
+    const merged = { ...expanded };
+    ancestorFolders.forEach((path) => {
+      merged[path] = true;
+    });
+    return merged;
+  }, [expanded, ancestorFolders]);
 
-    if (!acc[folder]) {
-      acc[folder] = [];
-    }
+  const handleToggle = (path: string, isOpen: boolean) => {
+    setExpanded((prev) => ({ ...prev, [path]: !isOpen }));
+  };
 
-    acc[folder].push(file);
-
-    return acc;
-  }, {} as Record<string, FileSummary[]>);
+  const rootChildren = sortChildren(tree.children);
 
   return (
     <aside
@@ -102,49 +225,17 @@ export default function Sidebar({
             </div>
           ) : (
             <div className="sidebar__tree">
-              {Object.entries(groupedFiles)
-                .sort(([a], [b]) => a.localeCompare(b))
-                .map(([folder, items]) => (
-                  <div
-                    key={folder}
-                    className="sidebar__folder"
-                  >
-                    <div className="sidebar__folder-title">
-                      <Folder size={15} />
-
-                      <span>
-                        {folder.split('/').pop()}
-                      </span>
-                    </div>
-
-                    {items
-                      .sort((a, b) =>
-                        a.name.localeCompare(b.name)
-                      )
-                      .map((file) => (
-                        <button
-                          key={file.name}
-                          type="button"
-                          className={`sidebar__file ${
-                            selectedPath === file.name ||
-                            file.active
-                              ? 'sidebar__file--active'
-                              : ''
-                          }`}
-                          onClick={() =>
-                            onFileSelect(file.name)
-                          }
-                          title={file.name}
-                        >
-                          <File size={14} />
-
-                          <span>
-                            {file.name.split('/').pop()}
-                          </span>
-                        </button>
-                      ))}
-                  </div>
-                ))}
+              {rootChildren.map((child) => (
+                <FolderNode
+                  key={child.path || child.name}
+                  node={child}
+                  depth={0}
+                  selectedPath={selectedPath}
+                  onFileSelect={onFileSelect}
+                  expanded={effectiveExpanded}
+                  onToggle={handleToggle}
+                />
+              ))}
             </div>
           )}
         </div>

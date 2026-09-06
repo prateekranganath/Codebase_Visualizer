@@ -78,9 +78,10 @@ class AppSettings:
 	llm_provider: str = "openai"
 	llm_model: str = "gpt-4o-mini"
 	llm_model_answer: str = "gpt-4o-mini"
-	llm_model_teach: str = "poolside/laguna-xs-2.1:free"
+	llm_model_teach: str = "nvidia/nemotron-3.5-lightning:free"
 	llm_model_explain: str = "gpt-4o-mini"
 	llm_model_refactor: str = "gpt-4o-mini"
+	llm_model_evaluate: str = "nvidia/nemotron-3.5-lightning:free"
 	llm_api_key: Optional[str] = None
 	llm_base_url: Optional[str] = None
 	openai_api_key: Optional[str] = None
@@ -92,8 +93,6 @@ class AppSettings:
 	vector_db_path: str = "vector_store"
 	graph_store_path: str = "graph_store"
 	graph_level: int = 2
-	mongo_url: Optional[str] = None
-	mongo_db_name: str = "codebase_visualizer"
 
 
 @lru_cache(maxsize=1)
@@ -112,6 +111,7 @@ def get_settings() -> AppSettings:
 		llm_model_teach=_first_model_from_env("LLM_MODEL_TEACH", AppSettings.llm_model),
 		llm_model_explain=_first_model_from_env("LLM_MODEL_EXPLAIN", AppSettings.llm_model),
 		llm_model_refactor=_first_model_from_env("LLM_MODEL_REFACTOR", AppSettings.llm_model),
+		llm_model_evaluate=_first_model_from_env("LLM_MODEL_EVALUATE", AppSettings.llm_model_teach),
 		llm_api_key=_resolve_llm_api_key(provider),
 		llm_base_url=_resolve_llm_base_url(provider),
 		openai_api_key=os.getenv("OPENAI_API_KEY"),
@@ -123,8 +123,6 @@ def get_settings() -> AppSettings:
 		vector_db_path=os.getenv("VECTOR_DB_PATH", AppSettings.vector_db_path),
 		graph_store_path=os.getenv("GRAPH_STORE_PATH", AppSettings.graph_store_path),
 		graph_level=_env_int("GRAPH_LEVEL", AppSettings.graph_level, min_value=1, max_value=3),
-		mongo_url=os.getenv("MONGO_URL"),
-		mongo_db_name=os.getenv("MONGO_DB_NAME", AppSettings.mongo_db_name),
 	)
 
 

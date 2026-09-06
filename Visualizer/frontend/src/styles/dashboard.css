@@ -1814,3 +1814,175 @@ color:var(--muted);
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Graph: node cap notice ────────────────────────────────────────────── */
+.graph-cap-notice {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-accent);
+  background: rgba(124, 92, 255, 0.14);
+  color: var(--muted-strong);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+/* ── Sidebar: recursive tree ───────────────────────────────────────────── */
+.sidebar__branch {
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar__branch-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar__folder-title--toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.sidebar__folder-title--toggle:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted-strong);
+}
+
+/* ── AI drawer: cached badge, risk card, rate-limit banner ────────────── */
+.ai-chat-drawer__cached-badge {
+  align-self: center;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ai-chat-drawer__output-card--risk {
+  border-color: rgba(255, 106, 162, 0.35);
+  background: rgba(255, 106, 162, 0.06);
+}
+
+.rate-limit-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 184, 77, 0.4);
+  background: rgba(255, 184, 77, 0.1);
+  color: var(--warning);
+  font-size: 0.82rem;
+}
+
+/* ── Teach loop ────────────────────────────────────────────────────────── */
+.teach-loop {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.teach-exchange {
+  position: relative;
+}
+
+.teach-evaluation {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.teach-evaluation--correct {
+  color: #86efac;
+}
+
+.teach-evaluation--incorrect {
+  color: var(--danger);
+}
+
+.teach-evaluation p,
+.teach-evaluation strong {
+  color: var(--text);
+}
+
+/* ── Diff viewer ───────────────────────────────────────────────────────── */
+.diff-view {
+  margin-top: 8px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: #060910;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.diff-view__line {
+  display: grid;
+  grid-template-columns: 40px 40px 16px 1fr;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-view__gutter {
+  padding: 0 6px;
+  text-align: right;
+  color: var(--muted);
+  opacity: 0.6;
+  user-select: none;
+}
+
+.diff-view__marker {
+  text-align: center;
+  user-select: none;
+}
+
+.diff-view__content {
+  padding-right: 10px;
+  color: #d7defc;
+}
+
+.diff-view__line--add {
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.diff-view__line--add .diff-view__content,
+.diff-view__line--add .diff-view__marker {
+  color: #86efac;
+}
+
+.diff-view__line--remove {
+  background: rgba(255, 106, 162, 0.12);
+}
+
+.diff-view__line--remove .diff-view__content,
+.diff-view__line--remove .diff-view__marker {
+  color: var(--danger);
+}
+
+.diff-view__line--hunk {
+  background: rgba(124, 92, 255, 0.1);
+  color: var(--muted);
+}
+
+.diff-view__line--hunk .diff-view__content {
+  color: var(--muted);
+}
+
+.diff-view__line--meta {
+  color: var(--muted);
+  opacity: 0.7;
+}

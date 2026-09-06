@@ -18,6 +18,7 @@ type GraphInspectorProps = {
   showMinimap?: boolean;
   onToggleMinimap?: () => void;
   onResetFocus?: () => void;
+  onExpandNeighborhood?: () => void;
 };
 
 function kindClass(kind: string | null | undefined) {
@@ -44,6 +45,7 @@ export default function GraphInspector({
   showMinimap,
   onToggleMinimap,
   onResetFocus,
+  onExpandNeighborhood,
 }: GraphInspectorProps) {
   const kClass = kindClass(nodeKind);
 
@@ -312,6 +314,7 @@ export default function GraphInspector({
           showMinimap={showMinimap}
           onToggleMinimap={onToggleMinimap}
           onResetFocus={onResetFocus}
+          onExpandNeighborhood={onExpandNeighborhood}
         />
       </div>
     </aside>

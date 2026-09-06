@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type KeyboardEvent } from 'react';
 import { useReactFlow } from 'reactflow';
 import {
   Maximize2,
@@ -11,6 +11,10 @@ import {
   Crosshair,
   Network,
   AlignCenter,
+  ChevronUp,
+  ChevronDown,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { useGraphUiStore } from '../../store/graphUiStore';
 
@@ -33,14 +37,19 @@ export default function GraphControls({
   const graphLevel = useGraphUiStore((s) => s.graphLevel);
   const setGraphLevel = useGraphUiStore((s) => s.setGraphLevel);
   const focusedNodeId = useGraphUiStore((s) => s.focusedNodeId);
+  const focusDepth = useGraphUiStore((s) => s.focusDepth);
+  const setFocusDepth = useGraphUiStore((s) => s.setFocusDepth);
+  const dimNonFocused = useGraphUiStore((s) => s.dimNonFocused);
+  const setDimNonFocused = useGraphUiStore((s) => s.setDimNonFocused);
   const searchQuery = useGraphUiStore((s) => s.searchQuery);
   const setSearchQuery = useGraphUiStore((s) => s.setSearchQuery);
+  const searchMatchIds = useGraphUiStore((s) => s.searchMatchIds);
+  const searchActiveIndex = useGraphUiStore((s) => s.searchActiveIndex);
+  const stepSearchMatch = useGraphUiStore((s) => s.stepSearchMatch);
 
   const [searchOpen, setSearchOpen] = useState(false);
 
-  const handleFocusNode = () => {
-    const id = selectedNodeId ?? focusedNodeId;
-    if (!id) return;
+  const panToNode = (id: string) => {
     const node = reactFlow.getNode(id);
     if (node) {
       reactFlow.setCenter(
@@ -51,21 +60,44 @@ export default function GraphControls({
     }
   };
 
+  const handleFocusNode = () => {
+    const id = selectedNodeId ?? focusedNodeId;
+    if (id) {
+      panToNode(id);
+    }
+  };
+
   const handleAutoLayout = () => {
     reactFlow.fitView({ padding: 0.18, duration: 400 });
+  };
+
+  const goToMatch = (direction: 1 | -1) => {
+    const id = stepSearchMatch(direction);
+    if (id) {
+      panToNode(id);
+    }
+  };
+
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter' || searchMatchIds.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    goToMatch(event.shiftKey ? -1 : 1);
   };
 
   return (
     <div className="graph-toolbar" aria-label="Graph controls">
       {/* Search bar (toggles inline) */}
       {searchOpen && (
-        <div className="graph-toolbar__group" style={{ flexDirection: 'row', alignItems: 'center', padding: '5px 8px' }}>
+        <div className="graph-toolbar__group" style={{ flexDirection: 'row', alignItems: 'center', padding: '5px 8px', gap: 4 }}>
           <Search size={12} style={{ color: 'var(--muted)', flexShrink: 0 }} />
           <input
             autoFocus
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
             placeholder="Search nodes…"
             style={{
               border: 'none',
@@ -77,6 +109,35 @@ export default function GraphControls({
             }}
             aria-label="Search graph nodes"
           />
+          {searchQuery.trim() && (
+            <span style={{ fontSize: '0.7rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+              {searchMatchIds.length === 0
+                ? 'No matches'
+                : `${searchActiveIndex >= 0 ? searchActiveIndex + 1 : 0}/${searchMatchIds.length}`}
+            </span>
+          )}
+          {searchMatchIds.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={() => goToMatch(-1)}
+                aria-label="Previous match"
+                title="Previous match (Shift+Enter)"
+                style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 0 }}
+              >
+                <ChevronUp size={13} />
+              </button>
+              <button
+                type="button"
+                onClick={() => goToMatch(1)}
+                aria-label="Next match"
+                title="Next match (Enter)"
+                style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 0 }}
+              >
+                <ChevronDown size={13} />
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={() => { setSearchOpen(false); setSearchQuery(''); }}
@@ -128,12 +189,38 @@ export default function GraphControls({
             type="button"
             className="graph-toolbar__btn"
             onClick={onExpandNeighborhood}
-            title="Expand neighborhood"
+            title="Expand neighborhood (fetch more from the server)"
             aria-label="Expand neighborhood"
             disabled={!selectedNodeId && !focusedNodeId}
           >
             <Network size={14} />
           </button>
+        )}
+
+        {focusedNodeId && (
+          <>
+            <select
+              className="graph-toolbar__select"
+              value={focusDepth}
+              onChange={(e) => setFocusDepth(Number(e.target.value) as 1 | 2 | 3)}
+              aria-label="Focus depth"
+              title="Focus depth (hops from the focused node)"
+            >
+              <option value={1}>1 hop</option>
+              <option value={2}>2 hops</option>
+              <option value={3}>3 hops</option>
+            </select>
+            <button
+              type="button"
+              className={`graph-toolbar__btn ${dimNonFocused ? 'graph-toolbar__btn--active' : ''}`}
+              onClick={() => setDimNonFocused(!dimNonFocused)}
+              title={dimNonFocused ? 'Dimming the rest of the graph -- click to hide it instead' : 'Hiding the rest of the graph -- click to dim it instead'}
+              aria-label="Toggle dim vs hide for non-focused nodes"
+              aria-pressed={dimNonFocused}
+            >
+              {dimNonFocused ? <Eye size={14} /> : <EyeOff size={14} />}
+            </button>
+          </>
         )}
 
         <div className="graph-toolbar__separator" />

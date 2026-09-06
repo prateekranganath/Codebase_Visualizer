@@ -83,6 +83,18 @@ def compute_chunk_checksum(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _build_embed_text(source: str, symbol_name: Optional[str], snippet: str) -> str:
+    """Prepend a location/symbol header to the text that gets embedded (not displayed).
+
+    Retrieval then keys on file path and symbol name as well as raw content, without
+    polluting the clean `text` field that gets rendered back into LLM prompts.
+    """
+    header = f"# File: {source}"
+    if symbol_name:
+        header += f"\n# Symbol: {symbol_name}"
+    return f"{header}\n\n{snippet}"
+
+
 def split_by_ast_functions(
     code: str,
 ) -> List[Tuple[int, int, str]]:
@@ -118,16 +130,57 @@ def split_by_ast_functions(
     return sorted(chunks, key=lambda x: x[0])
 
 
+def _make_ast_chunk(
+    node: ast.AST,
+    code: str,
+    source: str,
+    *,
+    parent_class: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    snippet = ast.get_source_segment(code, node)
+    if not snippet:
+        return None
+
+    name = getattr(node, "name", "") or ""
+    qualified_name = f"{parent_class}.{name}" if parent_class else name
+    chunk_id = compute_chunk_id(source, node.lineno, node.end_lineno or node.lineno)
+    checksum = compute_chunk_checksum(snippet)
+    token_count = estimate_token_count(snippet)
+
+    return {
+        "id": chunk_id,
+        "type": type(node).__name__,
+        "name": name,
+        "parent_class": parent_class,
+        "source": source,
+        "start_line": node.lineno,
+        "end_line": node.end_lineno or node.lineno,
+        "text": snippet,
+        "embed_text": _build_embed_text(source, qualified_name, snippet),
+        "checksum": checksum,
+        "token_count": token_count,
+        "docstring": ast.get_docstring(node),
+    }
+
+
 def chunk_code_with_meta(code: str, source: str = "unknown") -> List[Dict[str, Any]]:
     """
     Chunk Python code into AST-aware semantic units with metadata.
+
+    Iterates top-level definitions only (not ast.walk), which previously visited a
+    class's methods twice: once folded into the class's own chunk text, and again as
+    a second, unrelated top-level chunk with no indication it belonged to that class.
+    Here, a class is emitted as one whole-body chunk, and each of its methods is also
+    emitted as its own chunk tagged with parent_class — giving both a coarse
+    "what does this class do" hit and precise per-method hits, explicitly related.
 
     Args:
         code: Python source code.
         source: Optional file path for metadata.
 
     Returns:
-        List of chunk dicts with type, name, lines, code, checksum, id, and token_count.
+        List of chunk dicts with type, name, parent_class, lines, text, embed_text,
+        checksum, id, and token_count.
     """
     try:
         tree = ast.parse(code)
@@ -136,31 +189,22 @@ def chunk_code_with_meta(code: str, source: str = "unknown") -> List[Dict[str, A
 
     chunks: List[Dict[str, Any]] = []
 
-    for node in ast.walk(tree):
-        if isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ):
-            snippet = ast.get_source_segment(code, node)
-            if snippet:
-                chunk_id = compute_chunk_id(source, node.lineno, node.end_lineno or node.lineno)
-                checksum = compute_chunk_checksum(snippet)
-                token_count = estimate_token_count(snippet)
-
-                chunk = {
-                    "id": chunk_id,
-                    "type": type(node).__name__,
-                    "name": node.name,
-                    "source": source,
-                    "start_line": node.lineno,
-                    "end_line": node.end_lineno or node.lineno,
-                    "text": snippet,
-                    "checksum": checksum,
-                    "token_count": token_count,
-                    "docstring": ast.get_docstring(node),
-                }
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            chunk = _make_ast_chunk(node, code, source)
+            if chunk:
                 chunks.append(chunk)
+        elif isinstance(node, ast.ClassDef):
+            class_chunk = _make_ast_chunk(node, code, source)
+            if class_chunk:
+                chunks.append(class_chunk)
+            for member in node.body:
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    method_chunk = _make_ast_chunk(member, code, source, parent_class=node.name)
+                    if method_chunk:
+                        chunks.append(method_chunk)
 
-    return chunks
+    return sorted(chunks, key=lambda c: c["start_line"])
 
 
 def chunk_text(
@@ -202,22 +246,35 @@ def chunk_text(
         token_list = text.split()
         has_decode = False
 
+    def _decode(tokens: Any) -> str:
+        if has_decode:
+            try:
+                return tokenizer.decode(tokens)
+            except Exception:
+                return " ".join(str(t) for t in tokens)
+        return " ".join(tokens)
+
     chunks: List[Dict[str, Any]] = []
     start_idx = 0
     chunk_num = 0
 
+    # Running 1-indexed line counter. Advanced only by the newly-consumed stride
+    # tokens each iteration (not the whole prefix from scratch), so tracking line
+    # numbers stays O(n) total instead of O(n^2) on large files.
+    prefix_line_count = 1
+    prev_start_idx = 0
+
     while start_idx < len(token_list):
         end_idx = min(start_idx + max_tokens, len(token_list))
         chunk_tokens = token_list[start_idx:end_idx]
+        chunk_text_str = _decode(chunk_tokens)
 
-        # Decode tokens back to text
-        if has_decode:
-            try:
-                chunk_text_str = tokenizer.decode(chunk_tokens)
-            except Exception:
-                chunk_text_str = " ".join(str(t) for t in chunk_tokens)
-        else:
-            chunk_text_str = " ".join(chunk_tokens)
+        if start_idx > prev_start_idx:
+            prefix_line_count += _decode(token_list[prev_start_idx:start_idx]).count("\n")
+        prev_start_idx = start_idx
+
+        start_line = prefix_line_count
+        end_line = start_line + chunk_text_str.count("\n")
 
         chunk_id = f"{source}::chunk_{chunk_num}"
         checksum = compute_chunk_checksum(chunk_text_str)
@@ -228,7 +285,10 @@ def chunk_text(
             "source": source,
             "start_token": start_idx,
             "end_token": end_idx,
+            "start_line": start_line,
+            "end_line": end_line,
             "text": chunk_text_str,
+            "embed_text": _build_embed_text(source, None, chunk_text_str),
             "checksum": checksum,
             "token_count": token_count,
         }

@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.deps import get_ai_engine, get_teaching_engine
+from backend.services.ai_engine import RateLimitError
 from backend.models.ai_models import (
 	ExplainRequest,
 	ExplainResponseModel,
@@ -29,8 +30,11 @@ def query_codebase(payload: QueryRequest, ai_engine=Depends(get_ai_engine)):
 			mode=payload.mode,
 			max_tokens=payload.max_tokens,
 			temperature=payload.temperature,
+			root_dir=payload.root_dir,
 		)
 		return LLMResponseModel(**result)
+	except RateLimitError as exc:
+		raise HTTPException(status_code=429, detail={"error": "rate_limited", "retry_after_seconds": exc.retry_after_seconds}) from exc
 	except httpx.HTTPStatusError as exc:
 		status = exc.response.status_code if exc.response is not None else 502
 		raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -47,8 +51,11 @@ def explain_file(payload: ExplainRequest, ai_engine=Depends(get_ai_engine)):
 			top_k=payload.top_k,
 			max_tokens=payload.max_tokens,
 			temperature=payload.temperature,
+			force_refresh=payload.force_refresh,
 		)
 		return ExplainResponseModel(**result)
+	except RateLimitError as exc:
+		raise HTTPException(status_code=429, detail={"error": "rate_limited", "retry_after_seconds": exc.retry_after_seconds}) from exc
 	except httpx.HTTPStatusError as exc:
 		status = exc.response.status_code if exc.response is not None else 502
 		raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -63,11 +70,17 @@ def teach_evaluate(payload: TeachEvaluateRequest, teaching_engine=Depends(get_te
 			user_id=payload.user_id,
 			question=payload.question,
 			user_answer=payload.user_answer,
+			session_id=payload.session_id,
 			concept_focus=payload.concept_focus,
 			difficulty=payload.difficulty,
+			root_dir=payload.root_dir,
+			file_path=payload.file_path,
+			node_id=payload.node_id,
 			max_tokens=payload.max_tokens,
 		)
 		return TeachEvaluateResponseModel(**result)
+	except RateLimitError as exc:
+		raise HTTPException(status_code=429, detail={"error": "rate_limited", "retry_after_seconds": exc.retry_after_seconds}) from exc
 	except httpx.HTTPStatusError as exc:
 		status = exc.response.status_code if exc.response is not None else 502
 		raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -81,11 +94,16 @@ def teach(payload: TeachingRequest, teaching_engine=Depends(get_teaching_engine)
 		result = teaching_engine.teaching_response(
 			payload.user_id,
 			payload.query,
+			root_dir=payload.root_dir,
+			file_path=payload.file_path,
+			node_id=payload.node_id,
 			top_k=payload.top_k,
 			escalate_on_repeat=payload.escalate_on_repeat,
 			max_tokens=payload.max_tokens,
 		)
 		return TeachResponseModel(**result)
+	except RateLimitError as exc:
+		raise HTTPException(status_code=429, detail={"error": "rate_limited", "retry_after_seconds": exc.retry_after_seconds}) from exc
 	except httpx.HTTPStatusError as exc:
 		status = exc.response.status_code if exc.response is not None else 502
 		raise HTTPException(status_code=status, detail=str(exc)) from exc

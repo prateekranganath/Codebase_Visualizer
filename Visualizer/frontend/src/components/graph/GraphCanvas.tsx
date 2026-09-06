@@ -46,6 +46,8 @@ const NODE_SIZES: Record<string, { width: number; height: number }> = {
   function: { width: 160, height: 70 },
 };
 
+const MODULE_NODE_CAP = 60;
+
 const MODULE_KINDS = new Set(['module', 'file', 'package']);
 const CLASS_KINDS = new Set(['class']);
 const FUNCTION_KINDS = new Set(['function', 'method']);
@@ -342,14 +344,19 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
     riskFilter,
     showExternal,
     searchQuery,
+    searchMatchIds,
+    searchActiveIndex,
     expandedModules,
     expandedClasses,
     focusedNodeId,
+    focusDepth,
+    dimNonFocused,
     initializeGraphView,
     toggleModule,
     toggleClass,
     setFocusedNodeId,
     resetFocus,
+    setSearchMatches,
   } = useGraphUiStore();
   const reactFlow = useReactFlow();
   const nodesInitialized = useNodesInitialized();
@@ -358,7 +365,7 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
     initializeGraphView(nodes);
   }, [initializeGraphView, nodes]);
 
-  const { flowNodes, flowEdges } = useMemo(() => {
+  const computed = useMemo(() => {
     const parentById = buildParentMap(nodes, edges);
     const childrenByParent = buildChildrenMap(parentById);
     const nodeMap = new Map(nodes.map((node) => [node.id, node]));
@@ -366,9 +373,16 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
     const eligibleNodes = nodes.filter((node) => (showExternal ? true : !isExternal(node)));
     const eligibleMap = new Map(eligibleNodes.map((node) => [node.id, node]));
 
-    const moduleNodes = eligibleNodes.filter((node) => {
+    const allModuleNodes = eligibleNodes.filter((node) => {
       return isModuleNode(node);
     });
+
+    // Cap top-level module nodes on a large, unfocused, unsearched graph -- without
+    // this, a big repo renders every module at once regardless of relevance. Search
+    // and focus both disable the cap so they can always reach what they're looking
+    // for; the notice banner below tells the user nodes are being held back.
+    const shouldCapModules = !focusedNodeId && !searchQuery.trim() && allModuleNodes.length > MODULE_NODE_CAP;
+    const moduleNodes = shouldCapModules ? allModuleNodes.slice(0, MODULE_NODE_CAP) : allModuleNodes;
     const moduleIds = moduleNodes.map((node) => node.id);
 
     const candidateIds = new Set<string>(moduleIds);
@@ -432,28 +446,26 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
       });
     }
 
+    // Search highlights matches instead of hiding everything else -- a search used
+    // to collapse the graph down to just the hits (and their ancestor chain), which
+    // made it impossible to see a match in the context of the rest of the codebase.
+    // Now it pulls matches (and the collapsed ancestors hiding them) into view for
+    // highlighting, but never removes anything that was already visible.
+    const searchMatches = new Set<string>();
     if (searchQuery.trim()) {
       const normalized = searchQuery.trim().toLowerCase();
-      const searchMatches = new Set<string>();
       eligibleNodes.forEach((node) => {
         if (String(node.label ?? node.id).toLowerCase().includes(normalized)) {
           searchMatches.add(node.id);
         }
       });
 
-      const expandedMatches = new Set<string>();
       searchMatches.forEach((id) => {
-        expandedMatches.add(id);
+        candidateIds.add(id);
         let parent = parentById.get(id);
         while (parent) {
-          expandedMatches.add(parent);
+          candidateIds.add(parent);
           parent = parentById.get(parent);
-        }
-      });
-
-      candidateIds.forEach((id) => {
-        if (!expandedMatches.has(id)) {
-          candidateIds.delete(id);
         }
       });
     }
@@ -490,11 +502,16 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
        candidateIds.has(edge.target);
     });
 
-    const related = focusedNodeId ? buildNeighborhood(focusedNodeId, filteredEdges, 2) : new Set<string>();
+    const related = focusedNodeId ? buildNeighborhood(focusedNodeId, filteredEdges, focusDepth) : new Set<string>();
 
+    // "Hide" mode (dimNonFocused=false) hard-filters to the focused neighborhood, as
+    // before. "Dim" mode (the default) keeps everything on screen -- surrounding
+    // context stays visible, just visually de-emphasized via isDimmed -- since a
+    // focus that deletes the rest of the graph doesn't let you see how the focused
+    // node relates to anything you can no longer see.
     let finalNodes = visibleNodes;
     let finalEdges = filteredEdges;
-    if (focusedNodeId) {
+    if (focusedNodeId && !dimNonFocused) {
       const focusOnlyIds = new Set<string>(related);
       related.forEach((id) => {
         let parent = parentById.get(id);
@@ -618,7 +635,21 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
     });
 
     const modulePositions = layoutModules(moduleIds, moduleSizeById, moduleEdges);
-    const shouldDim = focusedNodeId ? (id: string) => !related.has(id) : () => false;
+    // Compute the ordered match list locally rather than reading it back from the
+    // store (searchMatchIds there is just an echo this component writes via effect
+    // below) -- reading our own echo back as a dependency would create a feedback
+    // loop between this memo and that effect.
+    const orderedSearchMatchIds = Array.from(searchMatches);
+    const activeSearchMatchId = searchActiveIndex >= 0 ? orderedSearchMatchIds[searchActiveIndex] : null;
+    const shouldDim = (id: string) => {
+      if (focusedNodeId && dimNonFocused && !related.has(id)) {
+        return true;
+      }
+      if (searchMatches.size > 0 && !searchMatches.has(id)) {
+        return true;
+      }
+      return false;
+    };
     const flowNodes: Node<GraphNodeUiData>[] = [];
 
     finalNodes.forEach((node) => {
@@ -635,6 +666,8 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
         isFocused: focusedNodeId === node.id,
         isRelated: related.has(node.id),
         isDimmed: shouldDim(node.id),
+        isSearchMatch: searchMatches.has(node.id),
+        isSearchActive: activeSearchMatchId === node.id,
         metadata: getMetadata(node),
       };
       const position = modulePositions.get(node.id) ?? { x: 0, y: 0 };
@@ -679,6 +712,8 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
           isFocused: focusedNodeId === child.id,
           isRelated: related.has(child.id),
           isDimmed: shouldDim(child.id),
+          isSearchMatch: searchMatches.has(child.id),
+          isSearchActive: activeSearchMatchId === child.id,
           metadata: getMetadata(child),
         };
 
@@ -739,16 +774,25 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
       })
       .filter(Boolean) as Edge[];
 
-    return { flowNodes, flowEdges };
+    return {
+      flowNodes,
+      flowEdges,
+      searchMatchIds: orderedSearchMatchIds,
+      shownModuleCount: moduleNodes.length,
+      totalModuleCount: allModuleNodes.length,
+    };
   }, [
     nodes,
     edges,
     expandedModules,
     expandedClasses,
     focusedNodeId,
+    focusDepth,
+    dimNonFocused,
     highComplexityOnly,
     riskFilter,
     searchQuery,
+    searchActiveIndex,
     showFunctions,
     showImports,
     showCalls,
@@ -756,6 +800,12 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
     showExternal,
     selectedNodeId,
   ]);
+
+  useEffect(() => {
+    setSearchMatches(computed.searchMatchIds);
+  }, [computed.searchMatchIds, setSearchMatches]);
+
+  const { flowNodes, flowEdges } = computed;
 
   const viewportKey = useMemo(
     () => `${flowNodes.map((node) => node.id).join('|')}::${flowEdges.map((edge) => edge.id).join('|')}`,
@@ -802,6 +852,12 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
       <div className="graph-filters-bar">
         <GraphFilters />
       </div>
+
+      {computed.totalModuleCount > computed.shownModuleCount && (
+        <div className="graph-cap-notice" role="status">
+          Showing {computed.shownModuleCount} of {computed.totalModuleCount} modules. Search or focus a node to reach the rest.
+        </div>
+      )}
 
       <div className="absolute bottom-6 left-14 z-20">
         <GraphLegend />

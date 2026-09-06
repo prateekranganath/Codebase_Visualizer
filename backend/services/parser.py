@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from backend.services.codebase_manager import read_file, resolve_safe_path
-from backend.services.js_ts_parser import parse_js_ts_module
+from backend.services.js_ts_parser import parse_js_ts_module, parse_js_ts_string
 
 
 def parse_file_contents(root_dir: str, relative_path: str) -> ast.AST:
@@ -36,6 +36,7 @@ def parse_file_contents(root_dir: str, relative_path: str) -> ast.AST:
 		return ast.parse(file_contents)
 	except SyntaxError as exc:
 		raise ValueError(f"Failed to parse Python file: {relative_path}") from exc
+
 
 
 def _unparse_node(node: Optional[ast.AST]) -> Optional[str]:
@@ -178,6 +179,35 @@ def _extract_class_info(node: ast.ClassDef) -> Dict[str, Any]:
 	}
 
 
+def parse_python_string(code: str, relative_path: str = "") -> Dict[str, Any]:
+	"""Parse Python source code text into structured module data."""
+	if not code.strip():
+		tree = ast.parse("")
+	else:
+		tree = ast.parse(code)
+
+	functions: List[Dict[str, Any]] = []
+	classes: List[Dict[str, Any]] = []
+
+	for node in tree.body:
+		if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+			functions.append(_extract_function_info(node))
+		elif isinstance(node, ast.ClassDef):
+			classes.append(_extract_class_info(node))
+
+	suffix = Path(relative_path).suffix
+	module_name = (relative_path[:-len(suffix)] if suffix else relative_path).replace("/", ".").replace("\\", ".")
+	return {
+		"path": relative_path,
+		"module_name": module_name,
+		"language": "python",
+		"docstring": ast.get_docstring(tree),
+		"imports": _extract_imports(tree),
+		"functions": functions,
+		"classes": classes,
+	}
+
+
 def parse_python_module(root_dir: str, relative_path: str) -> Dict[str, Any]:
 	"""
 	Parse a single Python module and return structured information.
@@ -189,26 +219,29 @@ def parse_python_module(root_dir: str, relative_path: str) -> Dict[str, Any]:
 	Returns:
 		A dictionary containing the module path, imports, classes, functions, and calls.
 	"""
-	tree = parse_file_contents(root_dir, relative_path)
+	file_contents = read_file(root_dir, relative_path)
+	return parse_python_string(file_contents, relative_path)
 
-	functions: List[Dict[str, Any]] = []
-	classes: List[Dict[str, Any]] = []
 
-	for node in tree.body:
-		if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-			functions.append(_extract_function_info(node))
-		elif isinstance(node, ast.ClassDef):
-			classes.append(_extract_class_info(node))
-
-	return {
-		"path": relative_path,
-		"module_name": Path(relative_path).with_suffix("").as_posix().replace("/", "."),
-		"language": "python",
-		"docstring": ast.get_docstring(tree),
-		"imports": _extract_imports(tree),
-		"functions": functions,
-		"classes": classes,
-	}
+def parse_code_string(code: str, relative_path: str, root_dir: str = "") -> Dict[str, Any]:
+	"""
+	Parse code string of supported file types (Python, JS, TS) into structured module data.
+	"""
+	suffix = Path(relative_path).suffix.lower()
+	if suffix == ".py":
+		return parse_python_string(code, relative_path)
+	elif suffix in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
+		return parse_js_ts_string(code, relative_path, root_dir)
+	else:
+		return {
+			"path": relative_path,
+			"module_name": relative_path,
+			"language": "unknown",
+			"docstring": None,
+			"imports": [],
+			"functions": [],
+			"classes": [],
+		}
 
 
 def _source_file_exts() -> Tuple[str, ...]:

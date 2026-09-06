@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { exportGraph } from '../api';
+import { exportGraph, getGraphSubgraph } from '../api';
 import type { GraphEdgeData, GraphNodeData } from '../types/backend';
 import { useWorkspaceStore } from '../store/workspaceStore';
 
@@ -126,8 +126,11 @@ export function useGraphWorkspace(projectRoot: string, selectedNodeId: string | 
     };
   }, [projectRoot, graphLevel, setLoading]);
 
+  // No nodes[0] fallback: when nothing is selected, there is no "active" node --
+  // silently targeting an arbitrary first node let the AI drawer answer about code
+  // the user never picked. Callers render an explicit empty state instead.
   const selectedGraphNode = useMemo(
-    () => nodes.find((node) => node.id === selectedNodeId) ?? nodes[0] ?? null,
+    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
   );
 
@@ -156,11 +159,47 @@ export function useGraphWorkspace(projectRoot: string, selectedNodeId: string | 
     }
   }, [projectRoot, graphLevel, setLoading]);
 
+  // Server-side drill-down: /graph/subgraph and getGraphSubgraph already existed but
+  // nothing called them, so "expand neighborhood" in the UI had no handler. Fetches
+  // a wider radius around a node and merges it into the current view (by id, so
+  // re-expanding doesn't duplicate anything already shown).
+  const expandNeighborhood = useCallback(async (nodeId: string, depth = 2) => {
+    if (!projectRoot || !nodeId) {
+      return;
+    }
+
+    setLoading('graph', true);
+    setGraphMessage(`Expanding neighborhood around ${nodeId}…`);
+
+    try {
+      const response = await getGraphSubgraph(projectRoot, [nodeId], depth);
+      const newNodes = normalizeNodes((response.nodes ?? []) as RawGraphNode[]);
+      const newEdges = normalizeEdges((response.edges ?? []) as RawGraphEdge[]);
+
+      setNodes((prev) => {
+        const byId = new Map(prev.map((node) => [node.id, node]));
+        newNodes.forEach((node) => byId.set(node.id, node));
+        return Array.from(byId.values());
+      });
+      setEdges((prev) => {
+        const byId = new Map(prev.map((edge) => [edge.id, edge]));
+        newEdges.forEach((edge) => byId.set(edge.id, edge));
+        return Array.from(byId.values());
+      });
+      setGraphMessage(`Expanded neighborhood: ${newNodes.length} nodes, ${newEdges.length} edges within ${depth} hop(s)`);
+    } catch (error) {
+      setGraphMessage(error instanceof Error ? error.message : 'Failed to expand neighborhood');
+    } finally {
+      setLoading('graph', false);
+    }
+  }, [projectRoot, setLoading]);
+
   return {
     nodes,
     edges,
     graphMessage,
     selectedGraphNode,
     refreshGraph,
+    expandNeighborhood,
   };
 }

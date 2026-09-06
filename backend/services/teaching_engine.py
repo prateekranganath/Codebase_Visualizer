@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from backend.services.ai_engine import AIEngine
+from backend.services.ai_engine import EVALUATE_SCHEMA, TEACH_SCHEMA, AIEngine
+from backend.utils.context_budget import TOKEN_BUDGETS
+
+# How long a teach session (question -> evaluate) stays recoverable by session_id.
+SESSION_TTL = timedelta(hours=2)
 
 
 @dataclass
@@ -33,6 +38,22 @@ class UserProfile:
     attempts_count: Dict[str, int] = field(default_factory=dict)  # topic -> count
 
 
+@dataclass
+class TeachSession:
+    """Recovers a /ai/teach question's context for the matching /ai/teach/evaluate call,
+    so the client only needs to echo back a session_id instead of resending everything."""
+
+    session_id: str
+    user_id: str
+    question: str
+    concept_focus: str
+    difficulty: str
+    root_dir: Optional[str] = None
+    file_path: Optional[str] = None
+    node_id: Optional[str] = None
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
 class TeachingEngine:
     """Provides Socratic-style guidance for code exploration and learning."""
 
@@ -45,6 +66,17 @@ class TeachingEngine:
         """
         self.ai_engine = ai_engine or AIEngine()
         self.user_profiles: Dict[str, UserProfile] = {}
+        self.sessions: Dict[str, TeachSession] = {}
+
+    def _purge_expired_sessions(self) -> None:
+        now = datetime.utcnow()
+        expired = [
+            session_id
+            for session_id, session in self.sessions.items()
+            if now - datetime.fromisoformat(session.created_at) > SESSION_TTL
+        ]
+        for session_id in expired:
+            del self.sessions[session_id]
 
     def _get_or_create_user(self, user_id: str) -> UserProfile:
         """Get an existing user profile or create a new one."""
@@ -129,22 +161,33 @@ class TeachingEngine:
         *,
         concept_focus: str,
         difficulty: str,
-        max_tokens: int = 256,
+        max_tokens: int = 512,
+        context: Optional[Dict[str, Any]] = None,
+        file_path: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Generate a single Socratic question + hint in a frontend-safe JSON shape."""
+        """Generate a single Socratic question + hint in a frontend-safe JSON shape.
+
+        When context (from AIEngine.build_context) is given, the question is grounded
+        in real retrieved code/graph relationships instead of the bare query string.
+        """
+        context_block = ""
+        if context and context.get("chunks"):
+            budgets = TOKEN_BUDGETS["teach"]
+            context_block = self.ai_engine._format_context_block(
+                context,
+                max_chunk_tokens=budgets["chunks"],
+                max_graph_tokens=budgets["graph"],
+            )
 
         system_prompt = self.ai_engine._system_prompt("teach")
         prompt = (
-            "Return JSON only (no markdown).\n"
-            "Schema:\n"
-            "{\n"
-            "  \"question\": string,\n"
-            "  \"hint\": string,\n"
-            "  \"concept_focus\": string,\n"
-            "  \"difficulty\": \"beginner\"|\"intermediate\"|\"advanced\"\n"
-            "}\n\n"
-            "Rules:\n"
+            "Ask ONE Socratic question about the code, tailored to the concept focus "
+            "and difficulty below.\n\n"
+            + (f"File in focus: {file_path}\n\n" if file_path else "")
+            + (f"Code context:\n{context_block}\n\n" if context_block else "")
+            + "Rules:\n"
             "- Ask ONE Socratic question only\n"
+            "- Reference a specific, real symbol (function/class/variable) from the code context or file when available\n"
             "- Hint must guide, not reveal the answer\n"
             "- Keep concise and tool-like\n\n"
             f"concept_focus: {concept_focus}\n"
@@ -152,14 +195,17 @@ class TeachingEngine:
             f"user_query: {query}\n"
         )
 
-        text = self.ai_engine.callLLM(
-            prompt,
-            system_prompt=system_prompt,
-            max_tokens=max_tokens,
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        parsed = self.ai_engine._call_structured(
+            messages,
+            schema=TEACH_SCHEMA,
+            tool_name="submit_question",
             task="teach",
+            max_tokens=max_tokens,
         )
-
-        parsed = self.ai_engine._parse_json_object(text)  # type: ignore[attr-defined]
         if not isinstance(parsed, dict):
             return {
                 "question": "What is the smallest part of the code you can inspect to validate your assumption?",
@@ -175,61 +221,14 @@ class TeachingEngine:
             "difficulty": str(parsed.get("difficulty", difficulty)).strip() or difficulty,
         }
 
-    def generate_hint(
-        self,
-        query: str,
-        context: Optional[Dict[str, Any]] = None,
-        top_k: int = 5,
-        hint_level: str = "light",
-    ) -> Dict[str, Any]:
-        """
-        Generate a hint that points toward the answer without giving it directly.
-
-        Args:
-            query: The user's question.
-            context: Optional retrieved context.
-            top_k: Number of top chunks to retrieve.
-            hint_level: "light" (very indirect), "medium" (moderate guidance), or "heavy" (almost the answer).
-
-        Returns:
-            Dict with hint, guidance level, and context.
-        """
-        if context is None:
-            context = self.ai_engine.build_context(query, top_k=top_k)
-
-        hint_prompt_map = {
-            "light": "Provide a very subtle hint; do not mention the answer. Ask what tool or concept might help.",
-            "medium": "Provide a moderate hint; mention relevant concepts but not the final answer.",
-            "heavy": "Provide a detailed hint that almost gives the answer, but leaves a small gap for discovery.",
-        }
-
-        system = hint_prompt_map.get(hint_level, hint_prompt_map["light"])
-
-        prompt = (
-            f"Question: {query}\n\n"
-            f"Context:\n{self.ai_engine._format_context_block(context)}\n\n"
-            f"{system}"
-        )
-
-        hint_text = self.ai_engine.callLLM(
-            prompt,
-            system_prompt="You are a guide. Provide hints without directly answering.",
-            max_tokens=256,
-            task="teach",
-        )
-
-        return {
-            "hint": hint_text,
-            "hint_level": hint_level,
-            "context": context,
-            "type": "hint",
-        }
-
     def teaching_response(
         self,
         user_id: str,
         query: str,
         *,
+        root_dir: Optional[str] = None,
+        file_path: Optional[str] = None,
+        node_id: Optional[str] = None,
         top_k: int = 5,
         escalate_on_repeat: bool = True,
         max_tokens: int = 512,
@@ -238,18 +237,24 @@ class TeachingEngine:
         Generate a full Socratic teaching response, adapting based on user level and history.
 
         This is the main method: it analyzes the user, retrieves context, and returns
-        questions, hints, or explanation depending on proficiency and topic history.
+        a question + hint grounded in the selected file/node when given. Mints a
+        session_id so the matching /ai/teach/evaluate call can recover this context
+        without the client resending it.
 
         Args:
             user_id: The user identifier.
             query: The user's question.
+            root_dir: Optional workspace root to scope retrieval to.
+            file_path: Optional workspace-relative file the question should focus on.
+            node_id: Optional graph node id the question should focus on.
             top_k: Number of context chunks to retrieve.
             escalate_on_repeat: If true, give more direct help after repeated attempts.
             max_tokens: Maximum tokens for the LLM response.
 
         Returns:
-            Dict with questions, hint, explanation, next_step, and interaction metadata.
+            Dict with session_id, question, hint, concept_focus, difficulty.
         """
+        self._purge_expired_sessions()
         profile = self._get_or_create_user(user_id)
         analysis = self.analyze_user_level(user_id, query)
         guidance_level = analysis["guidance_level"]
@@ -266,12 +271,34 @@ class TeachingEngine:
         proficiency = analysis["proficiency_level"]
         difficulty = proficiency if proficiency in {"beginner", "intermediate", "advanced"} else "beginner"
 
+        context: Optional[Dict[str, Any]] = None
+        if root_dir or file_path or node_id:
+            file_contents = self.ai_engine.read_source(file_path, root_dir)
+            retrieval_seed = node_id or file_path or query
+            retrieval_query = f"{retrieval_seed}\n\n{file_contents[:2000]}" if file_contents else retrieval_seed
+            context = self.ai_engine.build_context(retrieval_query, top_k=top_k, root_dir=root_dir)
+
         response = self.generate_teach_payload(
             query,
             concept_focus=topic,
             difficulty=difficulty,
-            max_tokens=min(max_tokens, 256),
+            max_tokens=max_tokens,
+            context=context,
+            file_path=file_path,
         )
+
+        session_id = uuid.uuid4().hex
+        self.sessions[session_id] = TeachSession(
+            session_id=session_id,
+            user_id=user_id,
+            question=response.get("question", ""),
+            concept_focus=response.get("concept_focus", topic),
+            difficulty=response.get("difficulty", difficulty),
+            root_dir=root_dir,
+            file_path=file_path,
+            node_id=node_id,
+        )
+        response["session_id"] = session_id
 
         # Store the interaction
         interaction = Interaction(
@@ -298,32 +325,72 @@ class TeachingEngine:
         user_id: str,
         question: str,
         user_answer: str,
+        session_id: Optional[str] = None,
         concept_focus: Optional[str] = None,
         difficulty: Optional[str] = None,
-        max_tokens: int = 256,
+        root_dir: Optional[str] = None,
+        file_path: Optional[str] = None,
+        node_id: Optional[str] = None,
+        max_tokens: int = 512,
     ) -> Dict[str, Any]:
         """Evaluate a user's answer to a Socratic question.
+
+        When session_id matches a live /ai/teach session, concept_focus/difficulty/
+        root_dir/file_path/node_id are recovered from it so the client doesn't need
+        to resend them (explicit args still take precedence when given).
 
         Returns a frontend-safe JSON shape:
         {is_correct, score, feedback, ideal_answer, concept_focus, difficulty}
         """
+        self._purge_expired_sessions()
         profile = self._get_or_create_user(user_id)
-        focus = (concept_focus or self._infer_topic(question) or "general").strip() or "general"
-        level = (difficulty or profile.proficiency_level or "beginner").strip().lower()
+        session = self.sessions.get(session_id) if session_id else None
+
+        focus = (
+            concept_focus
+            or (session.concept_focus if session else None)
+            or self._infer_topic(question)
+            or "general"
+        ).strip() or "general"
+        level = (
+            difficulty
+            or (session.difficulty if session else None)
+            or profile.proficiency_level
+            or "beginner"
+        ).strip().lower()
         if level not in {"beginner", "intermediate", "advanced"}:
             level = "beginner"
 
+        resolved_root_dir = root_dir or (session.root_dir if session else None)
+        resolved_file_path = file_path or (session.file_path if session else None)
+        resolved_node_id = node_id or (session.node_id if session else None)
+
+        context: Optional[Dict[str, Any]] = None
+        if resolved_root_dir or resolved_file_path or resolved_node_id:
+            file_contents = self.ai_engine.read_source(resolved_file_path, resolved_root_dir)
+            retrieval_seed = resolved_node_id or resolved_file_path or question
+            retrieval_query = f"{retrieval_seed}\n\n{file_contents[:2000]}" if file_contents else retrieval_seed
+            context = self.ai_engine.build_context(retrieval_query, top_k=5, root_dir=resolved_root_dir)
+
+        context_block = ""
+        if context and context.get("chunks"):
+            budgets = TOKEN_BUDGETS["evaluate"]
+            context_block = self.ai_engine._format_context_block(
+                context,
+                max_chunk_tokens=budgets["chunks"],
+                max_graph_tokens=budgets["graph"],
+            )
+
+        # Session served its purpose once evaluated; drop it so the sessions dict
+        # stays bounded to sessions still in progress.
+        if session_id and session_id in self.sessions:
+            del self.sessions[session_id]
+
         system_prompt = self.ai_engine._system_prompt("teach")
         prompt = (
-            "Return JSON only (no markdown).\n"
-            "Schema:\n"
-            "{\n"
-            "  \"is_correct\": boolean,\n"
-            "  \"score\": number,\n"
-            "  \"feedback\": string,\n"
-            "  \"ideal_answer\": string\n"
-            "}\n\n"
-            "Rules:\n"
+            "Evaluate the user's answer to the Socratic question below.\n\n"
+            + (f"Code context:\n{context_block}\n\n" if context_block else "")
+            + "Rules:\n"
             "- score must be between 0.0 and 1.0\n"
             "- feedback: 2-6 concise sentences, actionable\n"
             "- ideal_answer: 1-3 sentences, no code blocks\n"
@@ -334,14 +401,17 @@ class TeachingEngine:
             f"User answer: {user_answer}\n"
         )
 
-        text = self.ai_engine.callLLM(
-            prompt,
-            system_prompt=system_prompt,
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        parsed = self.ai_engine._call_structured(
+            messages,
+            schema=EVALUATE_SCHEMA,
+            tool_name="submit_evaluation",
+            task="evaluate",
             max_tokens=max_tokens,
-            task="teach",
         )
-
-        parsed = self.ai_engine._parse_json_object(text)  # type: ignore[attr-defined]
         if not isinstance(parsed, dict):
             result = {
                 "is_correct": False,

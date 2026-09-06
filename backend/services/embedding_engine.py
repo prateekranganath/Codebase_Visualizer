@@ -121,8 +121,11 @@ class EmbeddingEngine:
 
         self._initialize_index()
 
-        # Extract texts and prepare vectors
-        texts = [chunk.get("text", "") for chunk in chunks]
+        # Extract texts and prepare vectors. Prefer embed_text (a header-augmented
+        # version keying on file path/symbol name) when the chunk provides one, so
+        # retrieval is more precise; the plain `text` field is kept as-is for display
+        # back in LLM prompts and the UI.
+        texts = [chunk.get("embed_text") or chunk.get("text", "") for chunk in chunks]
         vectors = self._batch_text_to_vectors(texts)
 
         # Add vectors to FAISS when available, otherwise keep a numpy matrix.
@@ -266,11 +269,16 @@ class EmbeddingEngine:
             return
 
         index_path = self.vector_db_path / "index.faiss"
+        vectors_path = self.vector_db_path / "vectors.npy"
         metadata_path = self.vector_db_path / "metadata.json"
 
-        # Save FAISS index when available
+        # Save FAISS index when available, else persist the numpy fallback matrix so
+        # search results survive a process restart (faiss is an optional dependency
+        # and may not be installed/importable for the running Python version).
         if self.index is not None:
             faiss.write_index(self.index, str(index_path))
+        elif self.vectors is not None:
+            np.save(str(vectors_path), self.vectors)
 
         # Save metadata and ID mapping
         store_data = {
@@ -285,6 +293,7 @@ class EmbeddingEngine:
     def _load_from_disk(self) -> None:
         """Load the vector store from disk if it exists."""
         index_path = self.vector_db_path / "index.faiss"
+        vectors_path = self.vector_db_path / "vectors.npy"
         metadata_path = self.vector_db_path / "metadata.json"
 
         if not metadata_path.exists():
@@ -300,9 +309,11 @@ class EmbeddingEngine:
                 if isinstance(stored_dim, int) and stored_dim > 0:
                     self.embedding_dim = stored_dim
 
-            # Load FAISS index if present.
+            # Load FAISS index if present, else the numpy fallback matrix.
             if index_path.exists() and faiss is not None:
                 self.index = faiss.read_index(str(index_path))
+            elif vectors_path.exists():
+                self.vectors = np.load(str(vectors_path))
         except Exception as exc:
             print(f"Failed to load vector store from disk: {exc}")
 

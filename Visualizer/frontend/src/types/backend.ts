@@ -1,5 +1,10 @@
+export interface RateLimitDetail {
+  error: 'rate_limited';
+  retry_after_seconds?: number | null;
+}
+
 export interface ApiErrorResponse {
-  detail?: string;
+  detail?: string | RateLimitDetail;
   message?: string;
   error?: string;
 }
@@ -95,6 +100,7 @@ export interface ExplainRequest {
   top_k?: number;
   max_tokens?: number;
   temperature?: number | null;
+  force_refresh?: boolean;
 }
 
 export interface ExplainKeyComponent {
@@ -114,10 +120,13 @@ export interface ExplainResponseModel {
   dependencies: string[];
   risks: string[];
   insights: string[];
+  cached?: boolean;
 }
 
 export interface TeachingRequest {
   root_dir?: string;
+  file_path?: string;
+  node_id?: string;
   user_id: string;
   query: string;
   top_k?: number;
@@ -134,12 +143,33 @@ export interface LLMResponseModel {
 }
 
 export interface TeachingResponseModel {
-  guidance?: string;
-  question?: string;
-  hint?: string;
-  explanation?: string;
-  profile?: Record<string, unknown>;
-  [key: string]: unknown;
+  session_id: string;
+  question: string;
+  hint: string;
+  concept_focus: string;
+  difficulty: 'beginner' | 'intermediate' | 'advanced';
+}
+
+export interface TeachEvaluateRequest {
+  user_id: string;
+  session_id?: string;
+  question: string;
+  user_answer: string;
+  concept_focus?: string;
+  difficulty?: 'beginner' | 'intermediate' | 'advanced';
+  root_dir?: string;
+  file_path?: string;
+  node_id?: string;
+  max_tokens?: number;
+}
+
+export interface TeachEvaluateResponseModel {
+  is_correct: boolean;
+  score: number;
+  feedback: string;
+  ideal_answer: string;
+  concept_focus: string;
+  difficulty: 'beginner' | 'intermediate' | 'advanced';
 }
 
 export interface ProviderInfo {
@@ -207,7 +237,9 @@ export interface GraphSubgraphResponse {
 export interface RefactorProposalRequest {
   file_path: string;
   goal: string;
+  root_dir?: string;
   top_k?: number;
+  force_refresh?: boolean;
 }
 
 export interface RefactorProposalResponse {
@@ -217,12 +249,14 @@ export interface RefactorProposalResponse {
   risks?: string[];
   estimate?: string;
   metadata?: Record<string, unknown>;
+  cached?: boolean;
 }
 
 export interface RefactorValidateRequest {
   file_path: string;
   original_code: string;
   refactored_code: string;
+  root_dir?: string;
 }
 
 export interface RefactorValidationResponse {
@@ -238,6 +272,7 @@ export interface RefactorApplyRequest {
   file_path: string;
   new_code: string;
   create_backup?: boolean;
+  root_dir?: string;
 }
 
 export interface RefactorApplyResponse {
