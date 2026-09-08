@@ -6,6 +6,7 @@ import {
   Files,
   Folder,
   File,
+  FolderUp,
 } from 'lucide-react';
 import { FileListSkeleton } from '../Skeleton';
 
@@ -28,6 +29,7 @@ type SidebarProps = {
   onFileSelect: (fileName: string) => void;
   selectedPath: string | null;
   loading?: boolean;
+  onUploadClick?: () => void;
 };
 
 function buildTree(files: FileSummary[]): TreeNode {
@@ -68,8 +70,8 @@ function collectAncestorFolders(path: string | null): Set<string> {
 
 function sortChildren(children: Map<string, TreeNode>): TreeNode[] {
   return Array.from(children.values()).sort((a, b) => {
-    const aIsFolder = a.children.size > 0 && !a.file;
-    const bIsFolder = b.children.size > 0 && !b.file;
+    const aIsFolder = a.children.size > 0 || a.file?.kind === 'folder';
+    const bIsFolder = b.children.size > 0 || b.file?.kind === 'folder';
     if (aIsFolder !== bIsFolder) {
       return aIsFolder ? -1 : 1;
     }
@@ -93,7 +95,9 @@ function FolderNode({
   onToggle: (path: string, isOpen: boolean) => void;
 }) {
   const children = sortChildren(node.children);
-  const isFile = Boolean(node.file) && node.children.size === 0;
+  const entryKind = node.file?.kind?.toLowerCase();
+  const isFolder = node.children.size > 0 || entryKind === 'folder' || entryKind === 'directory';
+  const isFile = !isFolder && Boolean(node.file);
 
   if (isFile && node.file) {
     const file = node.file;
@@ -153,6 +157,7 @@ export default function Sidebar({
   onFileSelect,
   selectedPath,
   loading = false,
+  onUploadClick,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(
     () => window.innerWidth <= 1024
@@ -221,7 +226,16 @@ export default function Sidebar({
             <FileListSkeleton />
           ) : files.length === 0 ? (
             <div className="sidebar__empty">
-              No project loaded.
+              <FolderUp size={22} className="sidebar__empty-icon" />
+              <p className="sidebar__empty-title">No project loaded</p>
+              <p className="sidebar__empty-text">
+                Upload a folder or a .zip archive to explore it here.
+              </p>
+              {onUploadClick && (
+                <button type="button" className="sidebar__empty-cta" onClick={onUploadClick}>
+                  Upload project
+                </button>
+              )}
             </div>
           ) : (
             <div className="sidebar__tree">

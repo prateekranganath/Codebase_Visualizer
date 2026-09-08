@@ -12,14 +12,24 @@ export type GraphFilterState = {
   searchQuery: string;
   searchMatchIds: string[];
   searchActiveIndex: number;
-  expandedModules: Record<string, boolean>;
-  expandedClasses: Record<string, boolean>;
+  /**
+   * Expansion is one map keyed by node id, covering folders, modules and
+   * classes alike. Separate per-kind maps could not describe a folder, and
+   * every caller had to know which map a given id lived in.
+   */
+  expanded: Record<string, boolean>;
+  /** Node whose subtree replaces the canvas, set by double-click. */
+  focusRootId: string | null;
   focusedNodeId: string | null;
   focusDepth: 1 | 2 | 3;
   dimNonFocused: boolean;
+  /** Bumped to force a fresh layout without changing any other input. */
+  layoutNonce: number;
   setGraphLevel: (level: 1 | 2 | 3) => void;
-  toggleModule: (nodeId: string) => void;
-  toggleClass: (nodeId: string) => void;
+  toggleExpanded: (nodeId: string) => void;
+  setExpanded: (ids: string[]) => void;
+  expandAll: (ids: string[]) => void;
+  collapseAll: () => void;
   setSearchQuery: (query: string) => void;
   setSearchMatches: (ids: string[]) => void;
   stepSearchMatch: (direction: 1 | -1) => string | null;
@@ -30,11 +40,13 @@ export type GraphFilterState = {
   setHighComplexityOnly: (value: boolean) => void;
   setRiskFilter: (value: 'all' | 'low' | 'medium' | 'high') => void;
   setShowExternal: (value: boolean) => void;
+  setFocusRootId: (nodeId: string | null) => void;
   setFocusedNodeId: (nodeId: string | null) => void;
   setFocusDepth: (depth: 1 | 2 | 3) => void;
   setDimNonFocused: (value: boolean) => void;
-  initializeGraphView: (nodes: Array<{ id: string; kind?: string; type?: string; metadata?: Record<string, unknown> }>) => void;
+  requestRelayout: () => void;
   resetFocus: () => void;
+  resetGraphView: () => void;
 };
 
 const initialState = {
@@ -49,11 +61,12 @@ const initialState = {
   searchQuery: '',
   searchMatchIds: [] as string[],
   searchActiveIndex: -1,
-  expandedModules: {} as Record<string, boolean>,
-  expandedClasses: {} as Record<string, boolean>,
+  expanded: {} as Record<string, boolean>,
+  focusRootId: null as string | null,
   focusedNodeId: null as string | null,
   focusDepth: 2 as const,
   dimNonFocused: true,
+  layoutNonce: 0,
 };
 
 export const useGraphUiStore = create<GraphFilterState>((set, get) => ({
@@ -63,23 +76,19 @@ export const useGraphUiStore = create<GraphFilterState>((set, get) => ({
       graphLevel,
       showCalls: graphLevel >= 3,
       focusedNodeId: null,
-      expandedModules: {},
-      expandedClasses: {},
+      focusRootId: null,
+      expanded: {},
     }),
-  toggleModule: (nodeId) =>
+  toggleExpanded: (nodeId) =>
     set((state) => ({
-      expandedModules: {
-        ...state.expandedModules,
-        [nodeId]: !state.expandedModules[nodeId],
-      },
+      expanded: { ...state.expanded, [nodeId]: !state.expanded[nodeId] },
     })),
-  toggleClass: (nodeId) =>
+  setExpanded: (ids) => set({ expanded: Object.fromEntries(ids.map((id) => [id, true])) }),
+  expandAll: (ids) =>
     set((state) => ({
-      expandedClasses: {
-        ...state.expandedClasses,
-        [nodeId]: !state.expandedClasses[nodeId],
-      },
+      expanded: { ...state.expanded, ...Object.fromEntries(ids.map((id) => [id, true])) },
     })),
+  collapseAll: () => set({ expanded: {} }),
   setSearchQuery: (query) => set({ searchQuery: query, searchActiveIndex: -1 }),
   setSearchMatches: (ids) =>
     set((state) => ({
@@ -88,9 +97,7 @@ export const useGraphUiStore = create<GraphFilterState>((set, get) => ({
     })),
   stepSearchMatch: (direction) => {
     const { searchMatchIds, searchActiveIndex } = get();
-    if (searchMatchIds.length === 0) {
-      return null;
-    }
+    if (searchMatchIds.length === 0) return null;
     const nextIndex = (searchActiveIndex + direction + searchMatchIds.length) % searchMatchIds.length;
     set({ searchActiveIndex: nextIndex });
     return searchMatchIds[nextIndex];
@@ -102,36 +109,19 @@ export const useGraphUiStore = create<GraphFilterState>((set, get) => ({
   setHighComplexityOnly: (value) => set({ highComplexityOnly: value }),
   setRiskFilter: (value) => set({ riskFilter: value }),
   setShowExternal: (value) => set({ showExternal: value }),
-  setFocusedNodeId: (nodeId) => set({ focusedNodeId: nodeId }),
+  setFocusRootId: (focusRootId) => set({ focusRootId, focusedNodeId: null }),
+  setFocusedNodeId: (focusedNodeId) => set({ focusedNodeId }),
   setFocusDepth: (focusDepth) => set({ focusDepth }),
   setDimNonFocused: (dimNonFocused) => set({ dimNonFocused }),
-  initializeGraphView: (nodes) =>
-    set((state) => {
-      if (nodes.length === 0) {
-        return {};
-      }
-
-      const nodeIds = new Set(nodes.map((node) => node.id));
-      const expandedIds = Object.keys(state.expandedModules);
-      if (expandedIds.length > 0 && expandedIds.some((id) => nodeIds.has(id))) {
-        return {};
-      }
-
-      const modules = nodes.filter((node) => {
-        const kind = String(node.kind ?? node.type ?? '').toLowerCase();
-        return kind === 'module' || kind === 'file' || kind === 'package';
-      });
-
-      const modulesToExpand = modules.length <= 20 ? modules : modules.slice(0, 10);
-
-      // Leaf functions stay collapsed by default at level 3 (calls) -- that level
-      // already renders the most edges, so auto-expanding every class's methods on
-      // top of that produced the clutter this default is meant to avoid. Users can
-      // still expand a class by clicking it.
-      return {
-        expandedModules: Object.fromEntries(modulesToExpand.map((node) => [node.id, true])),
-        expandedClasses: {},
-      };
-    }),
+  requestRelayout: () => set((state) => ({ layoutNonce: state.layoutNonce + 1 })),
   resetFocus: () => set({ focusedNodeId: null }),
+  resetGraphView: () =>
+    set({
+      focusedNodeId: null,
+      focusRootId: null,
+      searchQuery: '',
+      searchMatchIds: [],
+      searchActiveIndex: -1,
+      expanded: {},
+    }),
 }));

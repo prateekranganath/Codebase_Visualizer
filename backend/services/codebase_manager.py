@@ -1,21 +1,22 @@
+from collections import deque
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 
-_HIDE_NAMES = {
-    ".venv",
-    "venv",
-    "env",
-    "__pycache__",
-    ".git",
-    "node_modules",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    "dist",
-    "build",
+# Directories that are dependency, cache, or build output -- never source the
+# user wants to browse or parse. Single source of truth: parser.py imports this.
+SKIP_DIRS = {
+    ".venv", "venv", "env",
+    "node_modules", "__pycache__", ".git", ".pytest_cache",
+    "build", "dist", "eggs", ".eggs",
+    "site-packages", ".tox", ".coverage", "htmlcov",
+    ".mypy_cache", ".ruff_cache", ".pytest", "migrations",
+    ".vscode", ".idea", ".DS_Store", "__snapshots__",
+    ".next", ".nuxt", ".svelte-kit", ".turbo", ".parcel-cache",
 }
+
+_HIDE_NAMES = SKIP_DIRS
+
 
 
 def resolve_safe_path(root_dir: str, relative_path: str) -> Path:
@@ -125,16 +126,109 @@ def list_files(root_dir: str, relative_path: str = "") -> List[str]:
 
     names: List[str] = []
     for entry in target_path.iterdir():
-        name = entry.name
-        if name in _HIDE_NAMES:
+        if _is_hidden_entry(entry):
             continue
-        if entry.is_file() and name == ".env":
-            continue
-        if entry.is_file() and name.lower().endswith(".zip"):
-            continue
-        names.append(name)
+        names.append(entry.name)
 
     return sorted(names, key=str.lower)
+
+
+_LANGUAGE_BY_SUFFIX = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".json": "json",
+    ".md": "markdown",
+    ".css": "css",
+    ".html": "html",
+    ".yml": "yaml",
+    ".yaml": "yaml",
+}
+
+# A repo can be enormous; the explorer only needs enough to navigate.
+_MAX_TREE_ENTRIES = 5000
+
+
+def _is_hidden_entry(entry: Path) -> bool:
+    name = entry.name
+    if name in _HIDE_NAMES:
+        return True
+    if entry.is_dir():
+        lowered = name.lower()
+        # Virtualenvs get named all sorts of things (".venv311_backup", "env39").
+        # A directory holding pyvenv.cfg is one no matter what it is called.
+        if lowered.startswith("venv") or lowered.startswith(".venv"):
+            return True
+        if lowered.endswith(".egg-info"):
+            return True
+        try:
+            if (entry / "pyvenv.cfg").exists():
+                return True
+        except OSError:
+            return True
+        return False
+    if name == ".env" or name.lower().endswith(".zip"):
+        return True
+    return False
+
+
+def list_tree(root_dir: str, relative_path: str = "") -> List[Dict[str, Any]]:
+    """Walk the project and return every file and directory under it.
+
+    The flat, one-level `list_files` could not describe a tree: the client got
+    bare names with no separators and no is_dir flag, so it rendered every
+    directory as an unopenable file. Entries here carry POSIX-relative paths so
+    the client can rebuild the hierarchy directly.
+    """
+    target_path = resolve_safe_path(root_dir, relative_path)
+
+    if not target_path.is_dir():
+        raise ValueError("Path is not a directory")
+
+    entries: List[Dict[str, Any]] = []
+    queue: deque[Path] = deque([target_path])
+
+    while queue and len(entries) < _MAX_TREE_ENTRIES:
+        directory = queue.popleft()
+        try:
+            children = sorted(
+                directory.iterdir(),
+                key=lambda child: (child.is_file(), child.name.lower()),
+            )
+        except OSError:
+            continue
+
+        for child in children:
+            if len(entries) >= _MAX_TREE_ENTRIES:
+                break
+            if _is_hidden_entry(child):
+                continue
+
+            is_dir = child.is_dir()
+            entry: Dict[str, Any] = {
+                "name": child.name,
+                "path": child.relative_to(target_path).as_posix(),
+                "is_dir": is_dir,
+                "kind": "folder" if is_dir else "file",
+            }
+            if not is_dir:
+                try:
+                    entry["size"] = child.stat().st_size
+                except OSError:
+                    entry["size"] = None
+                language = _LANGUAGE_BY_SUFFIX.get(child.suffix.lower())
+                if language:
+                    entry["language"] = language
+            entries.append(entry)
+
+            if is_dir:
+                queue.append(child)
+
+    return entries
 
 
 def read_file(root_dir: str, relative_path: str) -> str:
@@ -240,4 +334,4 @@ def get_file_metadata(root_dir: str, relative_path: str) -> Dict[str, Any]:
         "modified": stat.st_mtime,
         "is_file": target_path.is_file(),
         "is_dir": target_path.is_dir(),
-    }
+    }

@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import json
 import re
@@ -730,10 +730,16 @@ class AIEngine:
 		tools: Optional[List[Dict[str, Any]]] = None,
 		tool_choice: Optional[Dict[str, Any]] = None,
 		reasoning: Optional[Dict[str, Any]] = None,
+		accept: Optional[Callable[[LLMResponse], bool]] = None,
 	) -> LLMResponse:
 		"""Try each configured model candidate (then fallback-provider candidates) in
 		order, skipping models already known-dead this process lifetime, until one
 		succeeds. Shared by callLLM (plain text) and _call_structured (tool-calling).
+
+		`accept`, when given, is checked against every HTTP-successful response. A
+		response that fails it (e.g. a model that answered but ignored the forced
+		tool call) is treated like a soft failure: we keep trying candidates instead
+		of settling for it, but still remember it in case nothing better shows up.
 		"""
 
 		def is_retryable_status(status: Optional[int]) -> bool:
@@ -746,6 +752,7 @@ class AIEngine:
 			return status == 429 or status >= 500
 
 		last_error: Optional[BaseException] = None
+		last_response: Optional[LLMResponse] = None
 		model_candidates = [m for m in _task_model_candidates(task) if m not in _DEAD_MODELS]
 		if not model_candidates:
 			# Every configured candidate has 404'd this process lifetime — fall back to
@@ -756,7 +763,7 @@ class AIEngine:
 		for model in model_candidates:
 			adapter = create_llm_adapter(replace(self.llm_config, model=model))
 			try:
-				return adapter.complete(
+				response = adapter.complete(
 					messages,
 					max_tokens=max_tokens,
 					temperature=temperature,
@@ -778,12 +785,17 @@ class AIEngine:
 			except httpx.RequestError as exc:
 				last_error = exc
 				continue
+			else:
+				if accept is None or accept(response):
+					return response
+				last_response = response
+				continue
 
 		for fallback in self._fallback_adapters_for_task(task):
 			if fallback.config.model in _DEAD_MODELS:
 				continue
 			try:
-				return fallback.complete(
+				response = fallback.complete(
 					messages,
 					max_tokens=max_tokens,
 					temperature=temperature,
@@ -803,6 +815,17 @@ class AIEngine:
 			except httpx.RequestError as exc:
 				last_error = exc
 				continue
+			else:
+				if accept is None or accept(response):
+					return response
+				last_response = response
+				continue
+
+		if last_response is not None:
+			# Nothing satisfied `accept`, but at least one model answered -- hand
+			# back the last response rather than raising, so callers degrade
+			# gracefully (e.g. _call_structured returns None) instead of erroring.
+			return last_response
 
 		if last_error is not None:
 			if isinstance(last_error, httpx.HTTPStatusError) and last_error.response is not None and last_error.response.status_code == 429:
@@ -873,6 +896,36 @@ class AIEngine:
 		]
 		tool_choice = {"type": "function", "function": {"name": tool_name}}
 
+		def extract(resp: LLMResponse) -> Optional[Dict[str, Any]]:
+			if resp.tool_calls:
+				for call in resp.tool_calls:
+					function = call.get("function", {}) if isinstance(call, dict) else {}
+					if function.get("name") != tool_name:
+						continue
+					arguments = function.get("arguments")
+					if isinstance(arguments, dict):
+						return arguments
+					if isinstance(arguments, str):
+						try:
+							parsed = json.loads(arguments)
+							if isinstance(parsed, dict):
+								return parsed
+						except Exception:
+							pass
+
+			if resp.content:
+				try:
+					parsed = json.loads(resp.content)
+					if isinstance(parsed, dict):
+						return parsed
+				except Exception:
+					pass
+				parsed = self._parse_json_object(resp.content)
+				if parsed is not None:
+					return parsed
+
+			return None
+
 		response = self._complete_with_fallback(
 			messages,
 			max_tokens=max_tokens,
@@ -881,36 +934,10 @@ class AIEngine:
 			tools=tools,
 			tool_choice=tool_choice,
 			reasoning={"enabled": False},
+			accept=lambda resp: extract(resp) is not None,
 		)
 
-		if response.tool_calls:
-			for call in response.tool_calls:
-				function = call.get("function", {}) if isinstance(call, dict) else {}
-				if function.get("name") != tool_name:
-					continue
-				arguments = function.get("arguments")
-				if isinstance(arguments, dict):
-					return arguments
-				if isinstance(arguments, str):
-					try:
-						parsed = json.loads(arguments)
-						if isinstance(parsed, dict):
-							return parsed
-					except Exception:
-						pass
-
-		if response.content:
-			try:
-				parsed = json.loads(response.content)
-				if isinstance(parsed, dict):
-					return parsed
-			except Exception:
-				pass
-			parsed = self._parse_json_object(response.content)
-			if parsed is not None:
-				return parsed
-
-		return None
+		return extract(response)
 
 	def _fallback_adapters_for_task(self, task: str) -> List[BaseLLMAdapter]:
 		provider = (os.getenv("LLM_FALLBACK_PROVIDER") or "").strip().lower()

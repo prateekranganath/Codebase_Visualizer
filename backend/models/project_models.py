@@ -21,10 +21,21 @@ class ProjectFileResponse(BaseModel):
 	content: str
 
 
+class ProjectFileEntry(BaseModel):
+	"""One node of the project tree."""
+
+	name: str
+	path: str = Field(..., description="POSIX path relative to the listed root")
+	is_dir: bool = False
+	kind: str = "file"
+	size: Optional[int] = None
+	language: Optional[str] = None
+
+
 class ProjectListResponse(BaseModel):
 	root_dir: str
 	relative_path: str
-	files: List[str]
+	files: List[ProjectFileEntry]
 
 
 class ProjectMetadataResponse(BaseModel):

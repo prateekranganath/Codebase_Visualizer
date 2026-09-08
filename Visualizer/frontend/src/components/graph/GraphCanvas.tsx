@@ -1,26 +1,27 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import 'reactflow/dist/style.css';
 import ReactFlow, {
   Background,
+  Controls,
   MarkerType,
-  ReactFlowProvider,
-  useNodesInitialized,
   useReactFlow,
   type Edge,
   type Node,
 } from 'reactflow';
-import dagre from 'dagre';
+import { ChevronRight, Home } from 'lucide-react';
 import type { GraphEdgeData, GraphNodeData } from '../../types/backend';
-import { GraphSkeleton } from '../Skeleton';
 import ModuleNode from './nodes/ModuleNode';
 import ClassNode from './nodes/ClassNode';
 import FunctionNode from './nodes/FunctionNode';
+import FolderNode from './nodes/FolderNode';
 import GraphControls from './GraphControls';
 import GraphLegend from './GraphLegend';
 import GraphFilters from './GraphFilters';
 import MinimapPanel from './MinimapPanel';
-import type { GraphNodeKind, GraphNodeUiData, NodeMetadata } from './types';
+import type { GraphNodeUiData, NodeMetadata } from './types';
 import { useGraphUiStore } from '../../store/graphUiStore';
+import { buildGraphModel, type GraphModel, type ModelNode } from './layout/graphModel';
+import { collapsedSize, layoutGraph } from './layout/layoutGraph';
 
 type GraphCanvasProps = {
   nodes: GraphNodeData[];
@@ -35,306 +36,78 @@ type GraphCanvasProps = {
 };
 
 const nodeTypes = {
+  folder: FolderNode,
   module: ModuleNode,
   class: ClassNode,
   function: FunctionNode,
 };
 
-const NODE_SIZES: Record<string, { width: number; height: number }> = {
-  module: { width: 520, height: 220 },
-  class: { width: 220, height: 120 },
-  function: { width: 160, height: 70 },
-};
+const EDGE_COLOR = {
+  import: '#67e8f9',
+  inherits: '#e9a8ff',
+  call: '#6ee7b7',
+} as const;
 
-const MODULE_NODE_CAP = 60;
+/** Auto-expanding every module is what made the first render the widest one. */
+const AUTO_EXPAND_MODULE_LIMIT = 18;
 
-const MODULE_KINDS = new Set(['module', 'file', 'package']);
-const CLASS_KINDS = new Set(['class']);
-const FUNCTION_KINDS = new Set(['function', 'method']);
-const CONTAINMENT_KINDS = new Set(['contains', 'containment', 'owns']);
-const INHERITANCE_KINDS = new Set(['inherits', 'inheritance']);
-
-function toKind(value?: string | null): GraphNodeKind {
-  const normalized = String(value ?? '').toLowerCase();
-  if (MODULE_KINDS.has(normalized)) {
-    return 'module';
-  }
-  if (CLASS_KINDS.has(normalized)) {
-    return 'class';
-  }
-  if (FUNCTION_KINDS.has(normalized)) {
-    return 'function';
-  }
-  return 'unknown';
+/**
+ * How deep to open folders on load, by project size. A large repo opened to the
+ * same depth as a small one renders thousands of cards at a zoom where none of
+ * them are readable, so big projects open as a shallower overview and the user
+ * drills in from there.
+ */
+function autoExpandDepth(moduleCount: number): number {
+  if (moduleCount <= 150) return 3;
+  if (moduleCount <= 500) return 2;
+  return 1;
 }
 
-function getMetadata(node: GraphNodeData): NodeMetadata | undefined {
-  return (node.metadata ?? {}) as NodeMetadata;
+/** Above this, hand off culling to React Flow instead of mounting everything. */
+const VIRTUALIZE_ABOVE = 400;
+
+function isHighComplexity(metadata: NodeMetadata) {
+  return (metadata.complexity ?? 0) >= 10;
 }
 
-function isExternal(node: GraphNodeData) {
-  return Boolean(getMetadata(node)?.is_external);
-}
+/**
+ * Folders open, modules closed. The graph opens as an architecture overview and
+ * the user drills in, rather than dumping every symbol on screen at once.
+ */
+function defaultExpansion(model: GraphModel): string[] {
+  const expanded: string[] = [];
+  const moduleCount = Array.from(model.nodes.values()).filter(
+    (node) => node.kind === 'module' && !node.isExternal,
+  ).length;
+  const folderDepth = autoExpandDepth(moduleCount);
 
-function isHighComplexity(node: GraphNodeData) {
-  const complexity = getMetadata(node)?.complexity ?? 0;
-  return complexity >= 10;
-}
-
-function matchesRiskFilter(node: GraphNodeData, riskFilter: 'all' | 'low' | 'medium' | 'high') {
-  if (riskFilter === 'all') {
-    return true;
-  }
-
-  const risk = getMetadata(node)?.risk ?? 'low';
-  return risk === riskFilter;
-}
-
-function isModuleNode(node: GraphNodeData) {
-  return toKind(node.kind) === 'module';
-}
-
-function isClassNode(node: GraphNodeData) {
-  return toKind(node.kind) === 'class';
-}
-
-function isFunctionNode(node: GraphNodeData) {
-  return toKind(node.kind) === 'function';
-}
-
-function findModuleAncestor(nodeId: string, parentById: Map<string, string>, nodeMap: Map<string, GraphNodeData>) {
-  let currentId: string | undefined = nodeId;
-  while (currentId) {
-    const node = nodeMap.get(currentId);
-    if (node && isModuleNode(node)) {
-      return currentId;
-    }
-    currentId = parentById.get(currentId);
-  }
-  return null;
-}
-
-function layoutModules(
-  moduleIds: string[],
-  sizeById: Map<string, { width: number; height: number }>,
-  edges: Array<{ source: string; target: string }>,
-) {
-  // Deduplicate edges — dagre can choke on parallel edges between the same pair.
-  const seen = new Set<string>();
-  const uniqueEdges = edges.filter((e) => {
-    const key = `${e.source}||${e.target}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  if (uniqueEdges.length === 0) {
-    return new Map(
-      moduleIds.map((id, index) => {
-        const cols = Math.max(1, Math.ceil(Math.sqrt(moduleIds.length)));
-        const col = index % cols;
-        const row = Math.floor(index / cols);
-        const size = sizeById.get(id) ?? NODE_SIZES.module;
-        return [id, { x: col * (size.width + 80), y: row * (size.height + 60) }];
-      }),
-    );
-  }
-
-  const graph = new dagre.graphlib.Graph();
-  graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: 'TB', ranksep: 120, nodesep: 80 });
-
-  moduleIds.forEach((id) => {
-    const size = sizeById.get(id) ?? NODE_SIZES.module;
-    graph.setNode(id, { width: size.width, height: size.height });
-  });
-
-  uniqueEdges.forEach((edge) => {
-    graph.setEdge(edge.source, edge.target);
-  });
-
-  try {
-    dagre.layout(graph);
-  } catch {
-    // Fall through to grid fallback below.
-  }
-
-  return new Map(
-    moduleIds.map((id, index) => {
-      const layout = graph.node(id);
-      if (!layout || !Number.isFinite(layout.x) || !Number.isFinite(layout.y)) {
-        const cols = Math.max(1, Math.ceil(Math.sqrt(moduleIds.length)));
-        const col = index % cols;
-        const row = Math.floor(index / cols);
-        const size = sizeById.get(id) ?? NODE_SIZES.module;
-        return [id, { x: col * (size.width + 80), y: row * (size.height + 60) }];
+  const walk = (ids: string[], depth: number) => {
+    ids.forEach((id) => {
+      const node = model.nodes.get(id);
+      if (!node) return;
+      if (node.kind === 'folder' && depth < folderDepth) {
+        expanded.push(id);
+        walk(node.childIds, depth + 1);
+      } else if (node.kind === 'module' && moduleCount <= AUTO_EXPAND_MODULE_LIMIT) {
+        expanded.push(id);
       }
-      const size = sizeById.get(id) ?? NODE_SIZES.module;
-      return [id, { x: layout.x - size.width / 2, y: layout.y - size.height / 2 }];
-    }),
-  );
-}
-
-function layoutSubgraph(
-  nodeIds: string[],
-  edges: Array<{ source: string; target: string }>,
-  nodeMap: Map<string, GraphNodeData>,
-  options?: {
-    sizeOverrides?: Map<string, { width: number; height: number }>;
-    excludeIds?: Set<string>;
-  },
-) {
-  const graph = new dagre.graphlib.Graph();
-  graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: 'TB', ranksep: 80, nodesep: 50 });
-
-  nodeIds.forEach((id) => {
-    const override = options?.sizeOverrides?.get(id);
-    const node = nodeMap.get(id);
-    const size = override ?? sizeForKind(node ? toKind(node.kind) : 'function');
-    graph.setNode(id, { width: size.width, height: size.height });
-  });
-
-  edges.forEach((edge) => {
-    graph.setEdge(edge.source, edge.target);
-  });
-
-  dagre.layout(graph);
-
-  const positions = new Map<string, { x: number; y: number }>();
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = 0;
-  let maxY = 0;
-
-  nodeIds.forEach((id) => {
-    if (options?.excludeIds?.has(id)) {
-      return;
-    }
-    const override = options?.sizeOverrides?.get(id);
-    const node = nodeMap.get(id);
-    const size = override ?? sizeForKind(node ? toKind(node.kind) : 'function');
-    const layout = graph.node(id);
-    const x = layout ? layout.x - size.width / 2 : 0;
-    const y = layout ? layout.y - size.height / 2 : 0;
-    positions.set(id, { x, y });
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + size.width);
-    maxY = Math.max(maxY, y + size.height);
-  });
-
-  if (positions.size === 0) {
-    minX = 0;
-    minY = 0;
-  }
-
-  return {
-    positions,
-    bounds: {
-      width: Math.max(0, maxX - minX),
-      height: Math.max(0, maxY - minY),
-      minX,
-      minY,
-    },
-  };
-}
-
-function sizeForKind(kind: GraphNodeKind) {
-  if (kind === 'module') {
-    return NODE_SIZES.module;
-  }
-  if (kind === 'class') {
-    return NODE_SIZES.class;
-  }
-  return NODE_SIZES.function;
-}
-
-function buildNeighborhood(
-  startId: string,
-  edges: GraphEdgeData[],
-  depth = 2,
-) {
-  const adjacency = new Map<string, Set<string>>();
-  edges.forEach((edge) => {
-    const from = edge.source;
-    const to = edge.target;
-    if (!from || !to) {
-      return;
-    }
-    if (!adjacency.has(from)) {
-      adjacency.set(from, new Set());
-    }
-    if (!adjacency.has(to)) {
-      adjacency.set(to, new Set());
-    }
-    adjacency.get(from)?.add(to);
-    adjacency.get(to)?.add(from);
-  });
-
-  const visited = new Set<string>([startId]);
-  let frontier = new Set<string>([startId]);
-
-  for (let step = 0; step < depth; step += 1) {
-    const next = new Set<string>();
-    frontier.forEach((nodeId) => {
-      const neighbors = adjacency.get(nodeId);
-      if (!neighbors) {
-        return;
-      }
-      neighbors.forEach((neighbor) => {
-        if (!visited.has(neighbor)) {
-          visited.add(neighbor);
-          next.add(neighbor);
-        }
-      });
     });
-    frontier = next;
-  }
+  };
 
-  return visited;
+  walk(model.rootIds, 0);
+  return expanded;
 }
 
-function buildParentMap(nodes: GraphNodeData[], edges: GraphEdgeData[]) {
-  const parentById = new Map<string, string>();
-
-  nodes.forEach((node) => {
-    const metadataParent = getMetadata(node)?.parent_id;
-    if (metadataParent) {
-      parentById.set(node.id, metadataParent);
-    }
-  });
-
-  edges.forEach((edge) => {
-    const type = String(edge.type ?? "").toLowerCase();
-
-    if (!CONTAINMENT_KINDS.has(type)) return;
-
-    if (!parentById.has(edge.target)) {
-        parentById.set(edge.target, edge.source);
-    }
-  });
-
-  nodes.forEach((node) => {
-    if (!parentById.has(node.id) && node.group) {
-      parentById.set(node.id, node.group);
-    }
-  });
-
-  return parentById;
-}
-
-function buildChildrenMap(parentById: Map<string, string>) {
-  const children = new Map<string, string[]>();
-  parentById.forEach((parentId, childId) => {
-    const existing = children.get(parentId) ?? [];
-    existing.push(childId);
-    children.set(parentId, existing);
-  });
-  return children;
-}
-
-function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, showMinimap, onToggleMinimap, onExpandNeighborhood }: GraphCanvasProps) {
+function GraphFlow({
+  nodes,
+  edges,
+  selectedNodeId,
+  onNodeSelect,
+  onNodeOpen,
+  showMinimap,
+  onToggleMinimap,
+  onExpandNeighborhood,
+}: GraphCanvasProps) {
   const {
     showFunctions,
     showImports,
@@ -344,448 +117,291 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
     riskFilter,
     showExternal,
     searchQuery,
-    searchMatchIds,
     searchActiveIndex,
-    expandedModules,
-    expandedClasses,
+    expanded,
+    focusRootId,
     focusedNodeId,
     focusDepth,
     dimNonFocused,
-    initializeGraphView,
-    toggleModule,
-    toggleClass,
+    layoutNonce,
+    toggleExpanded,
+    setExpanded,
+    setFocusRootId,
     setFocusedNodeId,
     resetFocus,
     setSearchMatches,
   } = useGraphUiStore();
+
   const reactFlow = useReactFlow();
-  const nodesInitialized = useNodesInitialized();
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [aspect, setAspect] = useState(16 / 9);
+
+  // The packer targets the viewport's shape, so it has to know that shape.
+  useEffect(() => {
+    const element = wrapperRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width > 0 && height > 0) setAspect(width / height);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const model = useMemo(() => buildGraphModel(nodes, edges), [nodes, edges]);
+
+  // Identity of the underlying graph, not of the current view of it.
+  const modelKey = useMemo(
+    () => `${nodes.length}:${edges.length}:${nodes[0]?.id ?? ''}:${nodes[nodes.length - 1]?.id ?? ''}`,
+    [nodes, edges],
+  );
 
   useEffect(() => {
-    initializeGraphView(nodes);
-  }, [initializeGraphView, nodes]);
+    if (model.nodes.size === 0) return;
+    setExpanded(defaultExpansion(model));
+  }, [modelKey, model, setExpanded]);
 
   const computed = useMemo(() => {
-    const parentById = buildParentMap(nodes, edges);
-    const childrenByParent = buildChildrenMap(parentById);
-    const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+    const { nodes: modelNodes } = model;
 
-    const eligibleNodes = nodes.filter((node) => (showExternal ? true : !isExternal(node)));
-    const eligibleMap = new Map(eligibleNodes.map((node) => [node.id, node]));
+    const passesOwnFilters = (node: ModelNode): boolean => {
+      if (!showExternal && node.isExternal) return false;
+      if (node.kind === 'folder') return true;
+      if (!showFunctions && node.kind === 'function') return false;
+      if (highComplexityOnly && !isHighComplexity(node.metadata)) return false;
+      if (riskFilter !== 'all' && (node.metadata.risk ?? 'low') !== riskFilter) return false;
+      return true;
+    };
 
-    const allModuleNodes = eligibleNodes.filter((node) => {
-      return isModuleNode(node);
-    });
+    // A folder earns its place only if something inside it survived the filters.
+    const hasKeeper = new Map<string, boolean>();
+    const subtreeHasKeeper = (id: string): boolean => {
+      const cached = hasKeeper.get(id);
+      if (cached !== undefined) return cached;
+      const node = modelNodes.get(id);
+      if (!node) return false;
+      hasKeeper.set(id, false); // guard against a malformed cycle
+      const keeper =
+        (node.kind !== 'folder' && passesOwnFilters(node)) ||
+        node.childIds.some(subtreeHasKeeper);
+      hasKeeper.set(id, keeper);
+      return keeper;
+    };
 
-    // Cap top-level module nodes on a large, unfocused, unsearched graph -- without
-    // this, a big repo renders every module at once regardless of relevance. Search
-    // and focus both disable the cap so they can always reach what they're looking
-    // for; the notice banner below tells the user nodes are being held back.
-    const shouldCapModules = !focusedNodeId && !searchQuery.trim() && allModuleNodes.length > MODULE_NODE_CAP;
-    const moduleNodes = shouldCapModules ? allModuleNodes.slice(0, MODULE_NODE_CAP) : allModuleNodes;
-    const moduleIds = moduleNodes.map((node) => node.id);
+    const scopeRoots = focusRootId && modelNodes.has(focusRootId) ? [focusRootId] : model.rootIds;
 
-    const candidateIds = new Set<string>(moduleIds);
-
-    moduleNodes.forEach((moduleNode) => {
-      if (!expandedModules[moduleNode.id]) {
-        return;
-      }
-
-      const children = childrenByParent.get(moduleNode.id) ?? [];
-      children.forEach((childId) => {
-        const child = eligibleMap.get(childId);
-        if (!child) {
-          return;
-        }
-
-        const kind = toKind(child.kind);
-        if (kind === 'function' && !showFunctions) {
-          return;
-        }
-
-        candidateIds.add(childId);
-
-        if (kind === 'class' && expandedClasses[childId]) {
-          (childrenByParent.get(childId) ?? []).forEach((grandchildId) => {
-            const grandchild = eligibleMap.get(grandchildId);
-            if (!grandchild) {
-              return;
-            }
-            const grandchildKind = toKind(grandchild.kind);
-            if (grandchildKind === 'function' && !showFunctions) {
-              return;
-            }
-            candidateIds.add(grandchildId);
-          });
-        }
-      });
-    });
-
-    if (highComplexityOnly) {
-      const highComplexityIds = new Set(
-        eligibleNodes.filter((node) => isHighComplexity(node)).map((node) => node.id),
-      );
-      candidateIds.forEach((id) => {
-        if (highComplexityIds.has(id)) {
-          return;
-        }
-        const parentId = parentById.get(id);
-        if (!parentId || !highComplexityIds.has(parentId)) {
-          candidateIds.delete(id);
-        }
-      });
-    }
-
-    if (riskFilter !== 'all') {
-      candidateIds.forEach((id) => {
-        const node = eligibleMap.get(id);
-        if (!node || !matchesRiskFilter(node, riskFilter)) {
-          candidateIds.delete(id);
-        }
-      });
-    }
-
-    // Search highlights matches instead of hiding everything else -- a search used
-    // to collapse the graph down to just the hits (and their ancestor chain), which
-    // made it impossible to see a match in the context of the rest of the codebase.
-    // Now it pulls matches (and the collapsed ancestors hiding them) into view for
-    // highlighting, but never removes anything that was already visible.
+    const normalizedQuery = searchQuery.trim().toLowerCase();
     const searchMatches = new Set<string>();
-    if (searchQuery.trim()) {
-      const normalized = searchQuery.trim().toLowerCase();
-      eligibleNodes.forEach((node) => {
-        if (String(node.label ?? node.id).toLowerCase().includes(normalized)) {
-          searchMatches.add(node.id);
-        }
-      });
-
-      searchMatches.forEach((id) => {
-        candidateIds.add(id);
-        let parent = parentById.get(id);
-        while (parent) {
-          candidateIds.add(parent);
-          parent = parentById.get(parent);
-        }
+    if (normalizedQuery) {
+      modelNodes.forEach((node) => {
+        if (!passesOwnFilters(node)) return;
+        if (node.label.toLowerCase().includes(normalizedQuery)) searchMatches.add(node.id);
       });
     }
 
-    const visibleNodes = eligibleNodes.filter((node) => candidateIds.has(node.id));
-    const filteredEdges = edges.filter((edge) => {
-      const kind = String(edge.type ?? '').toLowerCase();
-      const isImport = kind === 'import';
-      const isCall = kind === 'call';
-      const isInheritance = INHERITANCE_KINDS.has(kind);
-      const isContainment = CONTAINMENT_KINDS.has(kind);
-
-      const sourceNode = nodeMap.get(edge.source);
-      const targetNode = nodeMap.get(edge.target);
-      const isSystemEdge =
-        Boolean(sourceNode && targetNode && isModuleNode(sourceNode) && isModuleNode(targetNode)) &&
-        (isImport || isInheritance);
-
-      if (isImport && !showImports && !isSystemEdge) {
-        return false;
-      }
-      if (isCall && !showCalls) {
-        return false;
-      }
-      if (isInheritance && !showInheritance && !isSystemEdge) {
-        return false;
-      }
-
-      if (!(isContainment || isInheritance || isImport || isCall)) {
-        return false;
-      }
-
-      return candidateIds.has(edge.source) &&
-       candidateIds.has(edge.target);
+    // Search reveals matches by opening whatever is hiding them, and never by
+    // deleting the surrounding context.
+    const effectiveExpanded = new Set(
+      Object.entries(expanded)
+        .filter(([, isOpen]) => isOpen)
+        .map(([id]) => id),
+    );
+    if (focusRootId) effectiveExpanded.add(focusRootId);
+    searchMatches.forEach((id) => {
+      model.ancestorsOf(id).forEach((ancestorId) => effectiveExpanded.add(ancestorId));
     });
 
-    const related = focusedNodeId ? buildNeighborhood(focusedNodeId, filteredEdges, focusDepth) : new Set<string>();
-
-    // "Hide" mode (dimNonFocused=false) hard-filters to the focused neighborhood, as
-    // before. "Dim" mode (the default) keeps everything on screen -- surrounding
-    // context stays visible, just visually de-emphasized via isDimmed -- since a
-    // focus that deletes the rest of the graph doesn't let you see how the focused
-    // node relates to anything you can no longer see.
-    let finalNodes = visibleNodes;
-    let finalEdges = filteredEdges;
-    if (focusedNodeId && !dimNonFocused) {
-      const focusOnlyIds = new Set<string>(related);
-      related.forEach((id) => {
-        let parent = parentById.get(id);
-        while (parent) {
-          focusOnlyIds.add(parent);
-          parent = parentById.get(parent);
+    const visible = new Set<string>();
+    const descend = (ids: string[]) => {
+      ids.forEach((id) => {
+        const node = modelNodes.get(id);
+        if (!node) return;
+        if (node.kind === 'folder') {
+          if (!showExternal && node.isExternal) return;
+          if (!subtreeHasKeeper(id)) return;
+        } else if (!passesOwnFilters(node)) {
+          return;
         }
+        visible.add(id);
+        if (effectiveExpanded.has(id)) descend(node.childIds);
       });
-      finalNodes = visibleNodes.filter((node) => focusOnlyIds.has(node.id));
-      finalEdges = filteredEdges.filter(
-        (edge) => focusOnlyIds.has(edge.source) && focusOnlyIds.has(edge.target),
-      );
-    }
+    };
+    descend(scopeRoots);
 
-    const dependencyCounts = new Map<string, number>();
-    finalEdges.forEach((edge) => {
-      dependencyCounts.set(edge.source, (dependencyCounts.get(edge.source) ?? 0) + 1);
+    const layout = layoutGraph({
+      model,
+      visible,
+      expanded: effectiveExpanded,
+      aspect,
     });
 
-    const moduleNodeIds = new Set(moduleIds);
-    const moduleEdges: Array<{ source: string; target: string }> = [];
-    edges.forEach((edge) => {
-      const kind = String(edge.type ?? '').toLowerCase();
-      const isImport = kind === 'import';
-      const isInheritance = INHERITANCE_KINDS.has(kind);
-      if (!isImport && !isInheritance) {
+    // --- edges -------------------------------------------------------------
+    const kindAllowed = (kind: 'import' | 'call' | 'inherits') => {
+      if (kind === 'import') return showImports;
+      if (kind === 'call') return showCalls;
+      return showInheritance;
+    };
+
+    const isAncestorOf = (ancestorId: string, id: string) =>
+      model.ancestorsOf(id).includes(ancestorId);
+
+    type Aggregated = {
+      source: string;
+      target: string;
+      kind: 'import' | 'call' | 'inherits';
+      count: number;
+    };
+    const aggregated = new Map<string, Aggregated>();
+    const outDegree = new Map<string, number>();
+    const inDegree = new Map<string, number>();
+
+    model.deps.forEach((dep) => {
+      if (!kindAllowed(dep.kind)) return;
+      const source = model.resolveVisible(dep.source, visible);
+      const target = model.resolveVisible(dep.target, visible);
+      if (!source || !target || source === target) return;
+      // Containment is shown by nesting; an arrow from a box to something
+      // drawn inside that same box is noise.
+      if (isAncestorOf(source, target) || isAncestorOf(target, source)) return;
+
+      const key = `${source}->${target}:${dep.kind}`;
+      const existing = aggregated.get(key);
+      if (existing) {
+        existing.count += 1;
         return;
       }
-      const fromModule = findModuleAncestor(edge.source, parentById, nodeMap);
-      const toModule = findModuleAncestor(edge.target, parentById, nodeMap);
-      if (!fromModule || !toModule || fromModule === toModule) {
-        return;
-      }
-      if (!moduleNodeIds.has(fromModule) || !moduleNodeIds.has(toModule)) {
-        return;
-      }
-      moduleEdges.push({ source: fromModule, target: toModule });
+      aggregated.set(key, { source, target, kind: dep.kind, count: 1 });
+      outDegree.set(source, (outDegree.get(source) ?? 0) + 1);
+      inDegree.set(target, (inDegree.get(target) ?? 0) + 1);
     });
 
-    const moduleSizeById = new Map<string, { width: number; height: number }>();
-    const moduleInternalLayout = new Map<
-      string,
-      {
-        positions: Map<string, { x: number; y: number }>;
-        bounds: { width: number; height: number; minX: number; minY: number };
-      }
-    >();
-
-    moduleIds.forEach((moduleId) => {
-      if (!expandedModules[moduleId]) {
-        moduleSizeById.set(moduleId, { ...NODE_SIZES.module });
-        return;
-      }
-
-      const internalNodeIds: string[] = [];
-      const internalEdges: Array<{ source: string; target: string }> = [];
-
-      (childrenByParent.get(moduleId) ?? []).forEach((childId) => {
-        const child = eligibleMap.get(childId);
-        if (!child) {
-          return;
-        }
-        if (isFunctionNode(child) && !showFunctions) {
-          return;
-        }
-        internalNodeIds.push(childId);
-
-        if (isClassNode(child) && expandedClasses[childId]) {
-          (childrenByParent.get(childId) ?? []).forEach((methodId) => {
-            const method = eligibleMap.get(methodId);
-            if (!method || !isFunctionNode(method) || !showFunctions) {
-              return;
+    // --- focus neighborhood ------------------------------------------------
+    const related = new Set<string>();
+    if (focusedNodeId && visible.has(focusedNodeId)) {
+      const adjacency = new Map<string, Set<string>>();
+      aggregated.forEach(({ source, target }) => {
+        if (!adjacency.has(source)) adjacency.set(source, new Set());
+        if (!adjacency.has(target)) adjacency.set(target, new Set());
+        adjacency.get(source)!.add(target);
+        adjacency.get(target)!.add(source);
+      });
+      related.add(focusedNodeId);
+      let frontier = new Set([focusedNodeId]);
+      for (let step = 0; step < focusDepth; step += 1) {
+        const next = new Set<string>();
+        frontier.forEach((id) => {
+          adjacency.get(id)?.forEach((neighbor) => {
+            if (!related.has(neighbor)) {
+              related.add(neighbor);
+              next.add(neighbor);
             }
-            internalNodeIds.push(methodId);
           });
-        }
-      });
+        });
+        frontier = next;
+      }
+    }
 
-      const internalNodeSet = new Set(internalNodeIds);
-      edges.forEach((edge) => {
-        const kind = String(edge.type ?? '').toLowerCase();
-        const isContainment = CONTAINMENT_KINDS.has(kind);
-        const isCall = kind === 'call';
-        const isInheritance = INHERITANCE_KINDS.has(kind);
-        if (!(isContainment || isCall || isInheritance)) {
-          return;
-        }
-        if (!internalNodeSet.has(edge.source) || !internalNodeSet.has(edge.target)) {
-          return;
-        }
-        internalEdges.push({ source: edge.source, target: edge.target });
-      });
+    const orderedMatches = Array.from(searchMatches).filter((id) => visible.has(id));
+    const activeMatchId = searchActiveIndex >= 0 ? orderedMatches[searchActiveIndex] : null;
 
-      const virtualRootId = `${moduleId}::__root`;
-      const incomingCount = new Map<string, number>();
-      internalNodeIds.forEach((id) => incomingCount.set(id, 0));
-      internalEdges.forEach((edge) => {
-        incomingCount.set(edge.target, (incomingCount.get(edge.target) ?? 0) + 1);
-      });
-      const rootEdges = internalNodeIds
-        .filter((id) => (incomingCount.get(id) ?? 0) === 0)
-        .map((id) => ({ source: virtualRootId, target: id }));
-
-      const layout = layoutSubgraph(
-        [...internalNodeIds, virtualRootId],
-        [...internalEdges, ...rootEdges],
-        nodeMap,
-        {
-          sizeOverrides: new Map([[virtualRootId, { width: 16, height: 16 }]]),
-          excludeIds: new Set([virtualRootId]),
-        },
-      );
-      moduleInternalLayout.set(moduleId, layout);
-
-      const paddingX = 32;
-      const paddingTop = 90;
-      const paddingBottom = 28;
-      const width = Math.max(layout.bounds.width + paddingX * 2, NODE_SIZES.module.width);
-      const height = Math.max(layout.bounds.height + paddingTop + paddingBottom, NODE_SIZES.module.height);
-      moduleSizeById.set(moduleId, { width, height });
-    });
-
-    const modulePositions = layoutModules(moduleIds, moduleSizeById, moduleEdges);
-    // Compute the ordered match list locally rather than reading it back from the
-    // store (searchMatchIds there is just an echo this component writes via effect
-    // below) -- reading our own echo back as a dependency would create a feedback
-    // loop between this memo and that effect.
-    const orderedSearchMatchIds = Array.from(searchMatches);
-    const activeSearchMatchId = searchActiveIndex >= 0 ? orderedSearchMatchIds[searchActiveIndex] : null;
     const shouldDim = (id: string) => {
-      if (focusedNodeId && dimNonFocused && !related.has(id)) {
-        return true;
-      }
-      if (searchMatches.size > 0 && !searchMatches.has(id)) {
-        return true;
-      }
+      if (focusedNodeId && dimNonFocused && related.size > 0 && !related.has(id)) return true;
+      if (searchMatches.size > 0 && !searchMatches.has(id)) return true;
       return false;
     };
+
+    // --- react flow nodes, parents before children -------------------------
     const flowNodes: Node<GraphNodeUiData>[] = [];
+    const emit = (id: string) => {
+      const node = modelNodes.get(id);
+      const position = layout.positions.get(id);
+      if (!node || !position) return;
 
-    finalNodes.forEach((node) => {
-      if (!moduleNodeIds.has(node.id)) {
-        return;
-      }
+      const size = layout.sizes.get(id) ?? collapsedSize(node.kind);
+      const parentId = node.parentId && visible.has(node.parentId) ? node.parentId : undefined;
+      const isOpen = effectiveExpanded.has(id) && node.childIds.some((c) => visible.has(c));
 
-      const data: GraphNodeUiData = {
-        label: node.label ?? node.id,
-        kind: 'module',
-        path: node.path,
-        dependencyCount: dependencyCounts.get(node.id) ?? 0,
-        isExpanded: Boolean(expandedModules[node.id]),
-        isFocused: focusedNodeId === node.id,
-        isRelated: related.has(node.id),
-        isDimmed: shouldDim(node.id),
-        isSearchMatch: searchMatches.has(node.id),
-        isSearchActive: activeSearchMatchId === node.id,
-        metadata: getMetadata(node),
-      };
-      const position = modulePositions.get(node.id) ?? { x: 0, y: 0 };
-      const size = moduleSizeById.get(node.id) ?? NODE_SIZES.module;
       flowNodes.push({
-        id: node.id,
-        type: 'module',
-        data,
+        id,
+        type: node.kind === 'unknown' ? 'function' : node.kind,
+        ...(parentId ? { parentNode: parentId, extent: 'parent' as const } : {}),
         position,
+        style: { width: size.width, height: size.height },
         draggable: false,
         selectable: true,
-        selected: node.id === selectedNodeId,
-        style: { width: size.width, height: size.height },
+        selected: id === selectedNodeId,
+        // Containers must not eat clicks meant for the children drawn on them.
+        data: {
+          label: node.label,
+          kind: node.kind,
+          path: node.path,
+          dependencyCount: outDegree.get(id) ?? 0,
+          dependentCount: inDegree.get(id) ?? 0,
+          childCount: node.childIds.filter((childId) => {
+            const child = modelNodes.get(childId);
+            return child ? showExternal || !child.isExternal : false;
+          }).length,
+          isContainer: node.childIds.length > 0,
+          isExpanded: isOpen,
+          isExternal: node.isExternal,
+          isFocused: focusedNodeId === id,
+          isRelated: related.has(id),
+          isDimmed: shouldDim(id),
+          isSearchMatch: searchMatches.has(id),
+          isSearchActive: activeMatchId === id,
+          isSelected: id === selectedNodeId,
+          metadata: node.metadata,
+        },
       });
 
-      if (!expandedModules[node.id]) {
-        return;
-      }
-
-      const layout = moduleInternalLayout.get(node.id);
-      if (!layout) {
-        return;
-      }
-
-      const paddingX = 32;
-      const paddingTop = 90;
-      const offsetX = paddingX - layout.bounds.minX;
-      const offsetY = paddingTop - layout.bounds.minY;
-
-      layout.positions.forEach((pos, childId) => {
-        const child = eligibleMap.get(childId);
-        if (!child) {
-          return;
-        }
-
-        const kind = toKind(child.kind);
-        const data: GraphNodeUiData = {
-          label: child.label ?? child.id,
-          kind,
-          path: child.path,
-          isExpanded: kind === 'class' ? Boolean(expandedClasses[child.id]) : undefined,
-          isFocused: focusedNodeId === child.id,
-          isRelated: related.has(child.id),
-          isDimmed: shouldDim(child.id),
-          isSearchMatch: searchMatches.has(child.id),
-          isSearchActive: activeSearchMatchId === child.id,
-          metadata: getMetadata(child),
-        };
-
-        flowNodes.push({
-          id: child.id,
-          type: kind === 'class' ? 'class' : 'function',
-          parentNode: node.id,
-          extent: 'parent',
-          data,
-          position: { x: pos.x + offsetX, y: pos.y + offsetY },
-          draggable: false,
-          selectable: true,
-          selected: child.id === selectedNodeId,
-        });
+      node.childIds.forEach((childId) => {
+        if (visible.has(childId)) emit(childId);
       });
+    };
+    scopeRoots.forEach(emit);
+
+    const flowEdges: Edge[] = Array.from(aggregated.values()).map((edge) => {
+      const color = EDGE_COLOR[edge.kind];
+      const isFocusEdge =
+        focusedNodeId != null && (edge.source === focusedNodeId || edge.target === focusedNodeId);
+      const dimmed = shouldDim(edge.source) && shouldDim(edge.target);
+      // Thickness reads as weight: a folder-to-folder arrow standing in for
+      // twelve imports should not look like a single one.
+      const width = Math.min(6, 1.4 + Math.log2(edge.count + 1));
+
+      return {
+        id: `${edge.source}->${edge.target}:${edge.kind}`,
+        source: edge.source,
+        target: edge.target,
+        type: 'smoothstep',
+        animated: isFocusEdge,
+        label: edge.count > 1 ? String(edge.count) : undefined,
+        labelShowBg: false,
+        labelStyle: { fill: color, fontSize: 10, opacity: 0.75 },
+        markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
+        style: {
+          stroke: color,
+          strokeWidth: isFocusEdge ? width + 1 : width,
+          strokeDasharray: edge.kind === 'inherits' ? '7 5' : undefined,
+          opacity: dimmed ? 0.12 : isFocusEdge ? 1 : 0.55,
+        },
+      } as Edge;
     });
-
-    const flowEdges: Edge[] = finalEdges
-      .map((edge) => {
-        const kind = String(edge.type ?? '').toLowerCase();
-        const isContainment = CONTAINMENT_KINDS.has(kind);
-        const isImport = kind === 'import';
-        const isCall = kind === 'call';
-        const isInheritance = INHERITANCE_KINDS.has(kind);
-
-        const isFocusedEdge = focusedNodeId != null && (edge.source === focusedNodeId || edge.target === focusedNodeId);
-
-        return {
-          id: edge.id ?? `${edge.source}-${edge.target}-${kind}`,
-          source: edge.source ,
-          target: edge.target,
-          type: 'smoothstep',
-          animated: isImport || isCall,
-          markerEnd: isContainment
-            ? undefined
-            : {
-                type: MarkerType.ArrowClosed,
-                color: isImport
-                  ? '#a5f3fc'
-                  : isInheritance
-                    ? '#e9a8ff'
-                    : '#6ee7b7',
-              },
-          style: {
-            stroke: isImport
-              ? '#a5f3fc'
-              : isInheritance
-                ? '#e9a8ff'
-                : isContainment
-                  ? 'rgba(186, 201, 222, 0.85)'
-                  : '#6ee7b7',
-            strokeWidth: isContainment ? 2 : isCall ? 2.2 : 2.8,
-            strokeDasharray: isImport ? '6 6' : isContainment ? '2 6' : undefined,
-            opacity: isContainment ? 0.85 : isFocusedEdge ? 1 : 0.95,
-            filter: isContainment ? 'none' : 'drop-shadow(0 0 8px rgba(165, 243, 252, 0.55))',
-          },
-        } as Edge;
-      })
-      .filter(Boolean) as Edge[];
 
     return {
       flowNodes,
       flowEdges,
-      searchMatchIds: orderedSearchMatchIds,
-      shownModuleCount: moduleNodes.length,
-      totalModuleCount: allModuleNodes.length,
+      searchMatchIds: orderedMatches,
+      bounds: layout.bounds,
+      visibleCount: visible.size,
+      totalCount: modelNodes.size,
     };
   }, [
-    nodes,
-    edges,
-    expandedModules,
-    expandedClasses,
+    model,
+    aspect,
+    expanded,
+    focusRootId,
     focusedNodeId,
     focusDepth,
     dimNonFocused,
@@ -801,62 +417,142 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
     selectedNodeId,
   ]);
 
+  const { flowNodes, flowEdges } = computed;
+
   useEffect(() => {
     setSearchMatches(computed.searchMatchIds);
   }, [computed.searchMatchIds, setSearchMatches]);
 
-  const { flowNodes, flowEdges } = computed;
-
-  const viewportKey = useMemo(
-    () => `${flowNodes.map((node) => node.id).join('|')}::${flowEdges.map((edge) => edge.id).join('|')}`,
-    [flowNodes, flowEdges],
-  );
+  /**
+   * Refit only when the graph's *structure* changes -- a new project, a new
+   * depth level, a different filter. Refitting on every expand/collapse threw
+   * the viewport around while the user was reading, and raced the pan that the
+   * click handler had just started.
+   */
+  const structureKey = [
+    modelKey,
+    focusRootId,
+    showExternal,
+    showFunctions,
+    showImports,
+    showCalls,
+    showInheritance,
+    highComplexityOnly,
+    riskFilter,
+    layoutNonce,
+  ].join('|');
 
   useEffect(() => {
-    if (!nodesInitialized || flowNodes.length === 0) {
-      return;
-    }
+    if (flowNodes.length === 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      reactFlow.fitView({ padding: 0.14, duration: 400, maxZoom: 1.1 });
+    });
+    return () => window.cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structureKey, flowNodes.length > 0]);
 
-    if (typeof window !== 'undefined') {
+  // Panning can never lose the graph: the reachable area is the content plus
+  // one screen of margin on each side.
+  const translateExtent = useMemo(() => {
+    const margin = 1200;
+    const width = Math.max(computed.bounds.width, 800);
+    const height = Math.max(computed.bounds.height, 600);
+    return [
+      [-margin, -margin],
+      [width + margin, height + margin],
+    ] as [[number, number], [number, number]];
+  }, [computed.bounds.width, computed.bounds.height]);
+
+  const focusOnNode = useCallback(
+    (nodeId: string) => {
       window.requestAnimationFrame(() => {
-      reactFlow.fitView({ padding: 0.2, duration: 320 });
+        const target = reactFlow.getNode(nodeId);
+        if (!target) return;
+        // positionAbsolute accounts for every parent frame; `position` is
+        // relative to the parent and pans to the wrong place for nested nodes.
+        const origin = target.positionAbsolute ?? target.position;
+        const width = Number(target.style?.width ?? target.width ?? 240);
+        const height = Number(target.style?.height ?? target.height ?? 90);
+        reactFlow.fitBounds(
+          { x: origin.x, y: origin.y, width, height },
+          { padding: 0.45, duration: 380 },
+        );
       });
-      return;
-    }
+    },
+    [reactFlow],
+  );
 
-    reactFlow.fitView({ padding: 0.2, duration: 320 });
-  }, [viewportKey, flowNodes.length, nodesInitialized, reactFlow]);
+  const handleNodeClick = useCallback(
+    (_: unknown, node: Node<GraphNodeUiData>) => {
+      onNodeSelect(node.id, node.data.path);
+      setFocusedNodeId(node.id);
+      if (node.data.isContainer) {
+        toggleExpanded(node.id);
+        if (!node.data.isExpanded) focusOnNode(node.id);
+      }
+    },
+    [onNodeSelect, setFocusedNodeId, toggleExpanded, focusOnNode],
+  );
 
-  const handleNodeClick = (_: unknown, node: Node<GraphNodeUiData>) => {
-    onNodeSelect(node.id, node.data.path);
-    const kind = node.data.kind;
-    if (kind === 'module') {
-      toggleModule(node.id);
-    }
-    if (kind === 'class') {
-      toggleClass(node.id);
-    }
-    setFocusedNodeId(node.id);
-    const target = reactFlow.getNode(node.id);
-    if (target) {
-      reactFlow.setCenter(target.position.x + 120, target.position.y + 80, { duration: 280, zoom: 0.9 });
-    }
-  };
+  const handleNodeDoubleClick = useCallback(
+    (_: unknown, node: Node<GraphNodeUiData>) => {
+      if (node.data.isContainer) {
+        setFocusRootId(node.id);
+        return;
+      }
+      onNodeOpen?.(node.id);
+    },
+    [onNodeOpen, setFocusRootId],
+  );
 
-  const handleNodeDoubleClick = (_: unknown, node: Node<GraphNodeUiData>) => {
-    onNodeOpen?.(node.id);
-  };
+  // Esc steps out of a drill-down, matching the breadcrumb.
+  useEffect(() => {
+    if (!focusRootId) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const parentId = model.nodes.get(focusRootId)?.parentId ?? null;
+      setFocusRootId(parentId);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [focusRootId, model, setFocusRootId]);
+
+  const breadcrumb = useMemo(() => {
+    if (!focusRootId) return [];
+    const chain = [...model.ancestorsOf(focusRootId)].reverse();
+    return [...chain, focusRootId]
+      .map((id) => model.nodes.get(id))
+      .filter((node): node is ModelNode => Boolean(node));
+  }, [focusRootId, model]);
 
   return (
-    <div className="absolute inset-0 min-h-0 min-w-0" style={{ width: '100%', height: '100%' }}>
+    <div ref={wrapperRef} className="absolute inset-0 min-h-0 min-w-0" style={{ width: '100%', height: '100%' }}>
       <div className="graph-filters-bar">
         <GraphFilters />
       </div>
 
-      {computed.totalModuleCount > computed.shownModuleCount && (
-        <div className="graph-cap-notice" role="status">
-          Showing {computed.shownModuleCount} of {computed.totalModuleCount} modules. Search or focus a node to reach the rest.
-        </div>
+      {breadcrumb.length > 0 && (
+        <nav className="graph-breadcrumb" aria-label="Graph drill-down">
+          <button type="button" className="graph-breadcrumb__crumb" onClick={() => setFocusRootId(null)}>
+            <Home size={12} />
+            <span>All</span>
+          </button>
+          {breadcrumb.map((node, index) => (
+            <span key={node.id} className="graph-breadcrumb__segment">
+              <ChevronRight size={12} className="graph-breadcrumb__sep" />
+              <button
+                type="button"
+                className={`graph-breadcrumb__crumb ${
+                  index === breadcrumb.length - 1 ? 'graph-breadcrumb__crumb--current' : ''
+                }`}
+                onClick={() => setFocusRootId(node.id)}
+              >
+                {node.label}
+              </button>
+            </span>
+          ))}
+          <span className="graph-breadcrumb__hint">Esc to go up</span>
+        </nav>
       )}
 
       <div className="absolute bottom-6 left-14 z-20">
@@ -869,30 +565,35 @@ function GraphFlow({ nodes, edges, selectedNodeId, onNodeSelect, onNodeOpen, sho
         </div>
       )}
 
-      {!selectedNodeId && (
-        <GraphControls
-          onResetFocus={resetFocus}
-          onExpandNeighborhood={onExpandNeighborhood}
-          selectedNodeId={selectedNodeId}
-          showMinimap={showMinimap}
-          onToggleMinimap={onToggleMinimap}
-        />
-      )}
+      <GraphControls
+        onResetFocus={resetFocus}
+        onExpandNeighborhood={onExpandNeighborhood}
+        selectedNodeId={selectedNodeId}
+        showMinimap={showMinimap}
+        onToggleMinimap={onToggleMinimap}
+      />
 
       <ReactFlow
         nodes={flowNodes}
         edges={flowEdges}
         nodeTypes={nodeTypes}
-        minZoom={0.15}
-        maxZoom={2.0}
+        minZoom={0.02}
+        maxZoom={2.5}
+        translateExtent={translateExtent}
         nodesDraggable={false}
         nodesConnectable={false}
+        elevateNodesOnSelect={false}
+        onlyRenderVisibleElements={flowNodes.length > VIRTUALIZE_ABOVE}
+        proOptions={{ hideAttribution: true }}
+        fitView
+        fitViewOptions={{ padding: 0.14, maxZoom: 1.1 }}
         onNodeClick={handleNodeClick}
         onNodeDoubleClick={handleNodeDoubleClick}
         onPaneClick={resetFocus}
         style={{ width: '100%', height: '100%' }}
       >
-        <Background gap={24} color="rgba(124, 92, 255, 0.12)" />
+        <Background gap={26} size={1} color="rgba(124, 92, 255, 0.14)" />
+        <Controls showInteractive={false} position="bottom-right" />
       </ReactFlow>
     </div>
   );
@@ -918,7 +619,9 @@ export default function GraphCanvas({
               <span style={{ fontSize: '1.4rem' }}>⬡</span>
             </div>
             <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--muted)' }}>Building dependency graph…</p>
-            <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--muted)', opacity: 0.7 }}>Analyzing project structure</p>
+            <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--muted)', opacity: 0.7 }}>
+              Analyzing project structure
+            </p>
           </div>
         </div>
       </div>
@@ -931,11 +634,11 @@ export default function GraphCanvas({
         <div className="graph-canvas__surface">
           <div className="graph-canvas__overlay">
             <div className="graph-canvas__overlay-icon">
-              <span style={{ fontSize: '1.4rem' }}>📂</span>
+              <span style={{ fontSize: '1.4rem' }}>◇</span>
             </div>
-            <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--muted)' }}>No graph data yet</p>
-            <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--muted)', opacity: 0.7 }}>
-              Upload a project or sync to build the graph
+            <p style={{ margin: 0, fontSize: '0.95rem', color: 'var(--text)' }}>No project loaded</p>
+            <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--muted)', maxWidth: 320 }}>
+              Upload a folder or a .zip archive and the dependency graph will be built from it.
             </p>
           </div>
         </div>

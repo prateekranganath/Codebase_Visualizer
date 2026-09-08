@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
+from backend.config.settings import get_settings
 from backend.db.graph_store import GraphStoreRepository
-from backend.services.graph_builder import CodeGraphBuilder
+from backend.services.graph_builder import GRAPH_BUILDER_VERSION, CodeGraphBuilder
 from backend.services.graph_normalizer import contains_noise_namespace
 from backend.services.parser import parse_codebase
 from backend.services.workspace_paths import is_allowed_graph_root, resolve_graph_store_root
@@ -38,6 +38,28 @@ def _cached_export_from_root_dir(root_dir: str, *, graph_level: int, graph_mtime
 	return builder.export_for_visualization(graph_level=graph_level)
 
 
+def _needs_rebuild(graph_root: Path, response: dict) -> bool:
+	"""True when the persisted graph must be rebuilt before it can be trusted.
+
+	A store written by an older builder is missing edges and node attributes the
+	current UI depends on, so version drift is treated the same as pollution.
+	"""
+	nodes = response.get("nodes") or []
+	if not nodes:
+		return False
+	if any(contains_noise_namespace(str(node.get("id", ""))) for node in nodes):
+		return True
+	return _stored_builder_version(graph_root) < GRAPH_BUILDER_VERSION
+
+
+def _stored_builder_version(graph_root: Path) -> int:
+	try:
+		repo = GraphStoreRepository(store_path=str(graph_root / "graph_store"))
+		return int(repo.load().graph.get("builder_version", 0))
+	except Exception:
+		return 0
+
+
 def _export_from_root_dir(root_dir: str, *, graph_level: int) -> dict:
 	root = Path(root_dir).resolve()
 	if not root.exists() or not root.is_dir():
@@ -53,11 +75,15 @@ def _export_from_root_dir(root_dir: str, *, graph_level: int) -> dict:
 		graph_level=graph_level,
 		graph_mtime_ns=graph_mtime_ns,
 	)
-	if response.get("nodes") and any(contains_noise_namespace(str(node.get("id", ""))) for node in response.get("nodes", [])):
-		# Rebuild from source so stale polluted graph_store data cannot leak into the UI.
+	if _needs_rebuild(graph_root, response):
+		# Rebuild from source so stale or polluted graph_store data cannot leak
+		# into the UI.
+		# Rebuild at the canonical (richest) level, never the requested export
+		# level -- this result gets persisted, and saving a level-1 rebuild would
+		# permanently discard detail every later export depends on.
 		codebase = parse_codebase(str(root))
 		builder = CodeGraphBuilder()
-		builder.build_from_codebase(codebase, graph_level=graph_level)
+		builder.build_from_codebase(codebase, graph_level=get_settings().graph_level)
 		repo = GraphStoreRepository(store_path=str(graph_root / "graph_store"))
 		repo.save(builder.graph)
 		_cached_export_from_root_dir.cache_clear()
@@ -81,7 +107,6 @@ def export_graph(
 		response = _export_from_root_dir(root_dir, graph_level=graph_level)
 	else:
 		response = graph_builder.export_for_visualization(graph_level=graph_level)
-	print("[graph/export] response:", json.dumps(response, ensure_ascii=False))
 	return response
 
 
@@ -184,5 +209,4 @@ def get_subgraph(
 		depth=depth,
 		graph_level=graph_level,
 	)
-	print("[graph/subgraph] response:", json.dumps(response, ensure_ascii=False))
 	return response

@@ -42,12 +42,6 @@ export default function Dashboard() {
   const [drawerTab, setDrawerTab] = useState<AIChatDrawerTab>('explain');
 
   // ── Data hooks ───────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!projectRoot) {
-      setProjectRoot(import.meta.env.VITE_PROJECT_ROOT ?? 'backend');
-    }
-  }, [projectRoot, setProjectRoot]);
-
   const { files, selectedContent, rootMessage, refreshFiles } = useProjectWorkspace(
     projectRoot,
     selectedFile,
@@ -254,6 +248,7 @@ export default function Dashboard() {
             }}
             selectedPath={selectedFile}
             loading={loading.files}
+            onUploadClick={() => setUploadOpen(true)}
           />
         }
         graphWorkspace={

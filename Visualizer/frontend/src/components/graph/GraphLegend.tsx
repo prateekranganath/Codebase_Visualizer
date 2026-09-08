@@ -1,37 +1,40 @@
+const NODE_KEYS = [
+  { label: 'Folder', className: 'glegend__swatch glegend__swatch--folder' },
+  { label: 'Module', className: 'glegend__swatch glegend__swatch--module' },
+  { label: 'Class', className: 'glegend__swatch glegend__swatch--class' },
+  { label: 'Function', className: 'glegend__swatch glegend__swatch--function' },
+];
+
+const EDGE_KEYS = [
+  { label: 'Import', className: 'glegend__line glegend__line--import' },
+  { label: 'Call', className: 'glegend__line glegend__line--call' },
+  { label: 'Inheritance', className: 'glegend__line glegend__line--inherits' },
+];
+
+/**
+ * Containment is intentionally absent: nesting shows it, so the canvas draws no
+ * containment edges and a legend entry for one would be a lie.
+ */
 export default function GraphLegend() {
   return (
-    <div className="rounded-2xl border border-slate-700/70 bg-slate-950/80 p-3 text-xs text-slate-200 shadow-lg">
-      <div className="text-[0.7rem] uppercase tracking-[0.2em] text-slate-400">Legend</div>
-      <div className="mt-2 grid gap-2">
-        <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-violet-400" />
-          <span>Module</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-amber-400" />
-          <span>Class</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-emerald-400" />
-          <span>Function</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="h-[2px] w-6 rounded-full bg-sky-400" />
-          <span>Import</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="h-[2px] w-6 rounded-full bg-emerald-400" />
-          <span>Call</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="h-[2px] w-6 rounded-full bg-rose-400" />
-          <span>Inheritance</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="h-[2px] w-6 rounded-full bg-slate-500" />
-          <span>Containment</span>
-        </div>
+    <div className="glegend">
+      <div className="glegend__title">Legend</div>
+      <div className="glegend__grid">
+        {NODE_KEYS.map((item) => (
+          <div key={item.label} className="glegend__row">
+            <span className={item.className} />
+            <span>{item.label}</span>
+          </div>
+        ))}
+        <div className="glegend__divider" />
+        {EDGE_KEYS.map((item) => (
+          <div key={item.label} className="glegend__row">
+            <span className={item.className} />
+            <span>{item.label}</span>
+          </div>
+        ))}
       </div>
+      <div className="glegend__hint">Click to expand · double-click to zoom in</div>
     </div>
   );
 }

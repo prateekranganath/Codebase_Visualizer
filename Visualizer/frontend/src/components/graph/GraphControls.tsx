@@ -46,16 +46,24 @@ export default function GraphControls({
   const searchMatchIds = useGraphUiStore((s) => s.searchMatchIds);
   const searchActiveIndex = useGraphUiStore((s) => s.searchActiveIndex);
   const stepSearchMatch = useGraphUiStore((s) => s.stepSearchMatch);
+  const requestRelayout = useGraphUiStore((s) => s.requestRelayout);
 
   const [searchOpen, setSearchOpen] = useState(false);
 
   const panToNode = (id: string) => {
     const node = reactFlow.getNode(id);
     if (node) {
-      reactFlow.setCenter(
-        node.position.x + (node.width ?? 160) / 2,
-        node.position.y + (node.height ?? 80) / 2,
-        { duration: 280, zoom: 1.0 },
+      // positionAbsolute accounts for every enclosing frame; `position` is
+      // relative to the parent and pans to the wrong place for nested nodes.
+      const origin = node.positionAbsolute ?? node.position;
+      reactFlow.fitBounds(
+        {
+          x: origin.x,
+          y: origin.y,
+          width: Number(node.style?.width ?? node.width ?? 240),
+          height: Number(node.style?.height ?? node.height ?? 90),
+        },
+        { padding: 0.4, duration: 320 },
       );
     }
   };
@@ -67,8 +75,11 @@ export default function GraphControls({
     }
   };
 
+  // Actually re-runs the layout. This used to only call fitView despite its
+  // name, so "auto layout" never rearranged anything.
   const handleAutoLayout = () => {
-    reactFlow.fitView({ padding: 0.18, duration: 400 });
+    requestRelayout();
+    reactFlow.fitView({ padding: 0.14, duration: 400, maxZoom: 1.1 });
   };
 
   const goToMatch = (direction: 1 | -1) => {

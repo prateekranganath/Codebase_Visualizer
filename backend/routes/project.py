@@ -232,7 +232,7 @@ def _extract_zip_archive(destination_root: Path, archive_file: UploadFile) -> Li
 def list_project_files(payload: ProjectPathRequest = Depends()):
 	try:
 		relative_path = _normalize_relative_path(payload.root_dir, payload.relative_path)
-		files = codebase_service.list_files(payload.root_dir, relative_path)
+		files = codebase_service.list_tree(payload.root_dir, relative_path)
 		return ProjectListResponse(
 			root_dir=payload.root_dir,
 			relative_path=relative_path,

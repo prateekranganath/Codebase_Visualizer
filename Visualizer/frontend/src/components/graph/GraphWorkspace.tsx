@@ -74,7 +74,8 @@ export default function GraphWorkspace({
   onExpandNeighborhood,
   onOpenAiDrawer,
 }: GraphWorkspaceProps) {
-  const [showMinimap, setShowMinimap] = useState(false);
+  // On by default: it is the fastest way to see where you are in a big graph.
+  const [showMinimap, setShowMinimap] = useState(true);
   const resetFocus = useGraphUiStore((s) => s.resetFocus);
 
   const inspectorOpen = Boolean(selectedNodeId);

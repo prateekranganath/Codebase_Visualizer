@@ -92,7 +92,10 @@ class AppSettings:
 	embedding_model_name: str = "all-MiniLM-L6-v2"
 	vector_db_path: str = "vector_store"
 	graph_store_path: str = "graph_store"
-	graph_level: int = 2
+	# Level the graph is BUILT and persisted at. Keep this at the richest level:
+	# export-time filtering can only ever remove detail, so a graph stored at
+	# level 2 makes call edges unreachable no matter what the client requests.
+	graph_level: int = 3
 
 
 @lru_cache(maxsize=1)

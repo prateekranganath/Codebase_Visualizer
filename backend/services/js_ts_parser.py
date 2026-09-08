@@ -6,6 +6,7 @@ and rudimentary call/method extraction without requiring a native JS AST runtime
 
 from __future__ import annotations
 
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
@@ -33,22 +34,52 @@ _METHOD_RE = re.compile(r"^\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\{", re.M
 _CALL_RE = re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
 
 
+_JS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
+
+def _module_id(relative_posix: str) -> str:
+	"""Dotted module id for a repo-relative file path, matching parse_codebase."""
+	return Path(relative_posix).with_suffix("").as_posix().replace("/", ".")
+
+
 def _resolve_relative_import(root_dir: str, relative_path: str, spec: str) -> str:
+	"""Resolve a relative import specifier to a dotted project module id.
+
+	Returns `spec` unchanged when it points outside the project (a package).
+	"""
 	if not spec.startswith("."):
 		return spec
 
-	base_dir = Path(relative_path).parent
-	candidate = (base_dir / spec).as_posix()
+	# posixpath.normpath collapses the "..": Path.as_posix() does not, so
+	# "controllers/../services/x.js" used to be probed verbatim and never hit.
+	candidate = posixpath.normpath(posixpath.join(Path(relative_path).parent.as_posix(), spec))
+	candidate = candidate.lstrip("./")
 	root_path = Path(root_dir)
-	for suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
-		path = (root_path / f"{candidate}{suffix}")
-		if path.exists():
-			return Path(f"{candidate}{suffix}").with_suffix("").as_posix().replace("/", ".")
-	for suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
-		path = (root_path / candidate / f"index{suffix}")
-		if path.exists():
-			index_path = Path(candidate) / f"index{suffix}"
-			return index_path.with_suffix("").as_posix().replace("/", ".")
+
+	# Exact hit first. ESM specifiers routinely carry the extension
+	# ("./db/connectdb.js"), and appending another one to that never matched --
+	# which silently downgraded every internal import to an external package.
+	if (root_path / candidate).is_file():
+		return _module_id(candidate)
+
+	for suffix in _JS_SUFFIXES:
+		if (root_path / f"{candidate}{suffix}").is_file():
+			return _module_id(f"{candidate}{suffix}")
+
+	for suffix in _JS_SUFFIXES:
+		if (root_path / candidate / f"index{suffix}").is_file():
+			return _module_id(f"{candidate}/index{suffix}")
+
+	# TS sources are imported as "./foo.js" but exist as "./foo.ts".
+	stem = Path(candidate)
+	if stem.suffix in _JS_SUFFIXES:
+		bare = stem.with_suffix("").as_posix()
+		for suffix in _JS_SUFFIXES:
+			if (root_path / f"{bare}{suffix}").is_file():
+				return _module_id(f"{bare}{suffix}")
+		for suffix in _JS_SUFFIXES:
+			if (root_path / bare / f"index{suffix}").is_file():
+				return _module_id(f"{bare}/index{suffix}")
 
 	return spec
 

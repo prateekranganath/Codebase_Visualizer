@@ -44,11 +44,20 @@ async def log_response_middleware(request: Request, call_next):
 
 	content_type = (response.headers.get("content-type") or "").lower()
 	if "json" in content_type and body:
+		# Summarize rather than dump. A graph export is hundreds of KB, and
+		# printing it in full on every request dominated the request itself.
 		try:
 			payload = json.loads(body.decode("utf-8"))
+			if isinstance(payload, dict):
+				summary = {
+					key: (f"[{len(value)} items]" if isinstance(value, (list, dict)) else value)
+					for key, value in payload.items()
+				}
+			else:
+				summary = f"[{len(payload)} items]" if isinstance(payload, list) else payload
 		except Exception:
-			payload = body.decode("utf-8", errors="replace")
-		print(f"[{request.method} {request.url.path}] response:", payload)
+			summary = body.decode("utf-8", errors="replace")[:2000]
+		print(f"[{request.method} {request.url.path}] {response.status_code}", summary)
 	elif body:
 		text = body.decode("utf-8", errors="replace")
 		if len(text) > 2000:

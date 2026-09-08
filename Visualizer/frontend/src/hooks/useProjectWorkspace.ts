@@ -116,10 +116,11 @@ export function useProjectWorkspace(projectRoot: string, selectedRelativePath: s
 
     async function loadRootData() {
       if (!projectRoot) {
-        setRootMessage('Set VITE_PROJECT_ROOT to load the backend workspace.');
+        setFiles([]);
+        setRootMessage('Upload a project to get started.');
         setBackendStatus({
-          state: 'offline',
-          message: 'Project root not configured',
+          state: 'unknown',
+          message: 'No project loaded',
           lastCheckedAt: new Date().toISOString(),
         });
         return;
@@ -139,13 +140,13 @@ export function useProjectWorkspace(projectRoot: string, selectedRelativePath: s
           message: health.status === 'ok' ? 'Backend connected' : `Backend status: ${health.status}`,
           lastCheckedAt: new Date().toISOString(),
         });
-        const defaultSelected = selectedRelativePath ?? selectDefaultFile(fileList.files);
+        const defaultSelected = selectDefaultFile(fileList.files);
         setFiles(
           fileList.files.map((entry) =>
             isFileEntry(entry) ? mapProjectFile(entry, defaultSelected) : mapStringFile(entry, defaultSelected),
           ),
         );
-        setRootMessage(fileList.relative_path ? `Loaded ${fileList.relative_path}` : `Loaded ${fileList.files.length} items`);
+        setRootMessage(`Loaded ${fileList.files.length} items`);
       } catch (error) {
         if (!active) {
           return;
@@ -170,7 +171,9 @@ export function useProjectWorkspace(projectRoot: string, selectedRelativePath: s
     return () => {
       active = false;
     };
-  }, [projectRoot, selectedRelativePath, setBackendStatus, setLoading]);
+    // Deliberately not keyed on the selected file: re-listing the whole tree
+    // every time the user clicked a file was pure waste.
+  }, [projectRoot, setBackendStatus, setLoading]);
 
   useEffect(() => {
     let active = true;

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from backend.services.codebase_manager import read_file, resolve_safe_path
+from backend.services.codebase_manager import SKIP_DIRS, read_file, resolve_safe_path
 from backend.services.js_ts_parser import parse_js_ts_module, parse_js_ts_string
 
 
@@ -297,17 +297,6 @@ def parse_codebase(root_dir: str, relative_path: str = "") -> Dict[str, Dict[str
 	Returns:
 		A mapping of relative file paths to parsed module data.
 	"""
-	# Directories to skip during parsing (common dependency/cache directories)
-	SKIP_DIRS = {
-		'.venv', 'venv', 'env', '.env',
-		'node_modules', '__pycache__', '.git', '.pytest_cache',
-		'build', 'dist', 'eggs', '.eggs', '*.egg-info',
-		'site-packages', '.tox', '.coverage', 'htmlcov',
-		'.mypy_cache', '.ruff_cache', '.pytest', 'migrations',
-		'.vscode', '.idea', '.DS_Store', '__snapshots__',
-		'.next', '.nuxt', '.svelte-kit', '.turbo', '.parcel-cache'
-	}
-
 	target_root = resolve_safe_path(root_dir, relative_path)
 
 	if not target_root.exists():

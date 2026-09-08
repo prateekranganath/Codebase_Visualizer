@@ -85,7 +85,7 @@ export function useGraphWorkspace(projectRoot: string, selectedNodeId: string | 
       if (!projectRoot) {
         setNodes([]);
         setEdges([]);
-        setGraphMessage('Set VITE_PROJECT_ROOT to load graph data.');
+        setGraphMessage('Upload a project to build its dependency graph.');
         return;
       }
 

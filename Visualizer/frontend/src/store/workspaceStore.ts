@@ -2,6 +2,31 @@ import { create } from 'zustand';
 
 export type BackendConnectionState = 'unknown' | 'online' | 'offline';
 
+const PROJECT_ROOT_STORAGE_KEY = 'codebase-visualizer:project-root';
+
+/**
+ * The last workspace the user actually uploaded, so a reload does not drop them
+ * back to an empty canvas. There is deliberately no built-in default: pointing
+ * at the app's own `backend/` folder made it look like a project was loaded
+ * before the user had uploaded anything.
+ */
+function readStoredProjectRoot(): string {
+  try {
+    return window.localStorage.getItem(PROJECT_ROOT_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStoredProjectRoot(projectRoot: string): void {
+  try {
+    if (projectRoot) window.localStorage.setItem(PROJECT_ROOT_STORAGE_KEY, projectRoot);
+    else window.localStorage.removeItem(PROJECT_ROOT_STORAGE_KEY);
+  } catch {
+    // Private browsing or blocked storage: remembering is a convenience only.
+  }
+}
+
 export type WorkspaceLoadingState = {
   files: boolean;
   graph: boolean;
@@ -53,8 +78,8 @@ const initialBackendStatus: BackendStatus = {
 };
 
 const initialState = {
-  projectRoot: '',
-  selectedRelativePath: 'backend/main.py',
+  projectRoot: readStoredProjectRoot(),
+  selectedRelativePath: null as string | null,
   selectedNodeId: null,
   activeFilter: 'All',
   searchQuery: '',
@@ -65,7 +90,10 @@ const initialState = {
 
 export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
   ...initialState,
-  setProjectRoot: (projectRoot) => set({ projectRoot }),
+  setProjectRoot: (projectRoot) => {
+    writeStoredProjectRoot(projectRoot);
+    set({ projectRoot, selectedRelativePath: null, selectedNodeId: null });
+  },
   setSelectedRelativePath: (selectedRelativePath) => set({ selectedRelativePath }),
   setSelectedNodeId: (selectedNodeId) => set({ selectedNodeId }),
   setActiveFilter: (activeFilter) => set({ activeFilter }),
@@ -95,10 +123,13 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set) => ({
         lastCheckedAt: new Date().toISOString(),
       },
     }),
-  resetWorkspace: () =>
+  resetWorkspace: () => {
+    writeStoredProjectRoot('');
     set({
       ...initialState,
+      projectRoot: '',
       loading: { ...initialLoadingState },
       backendStatus: { ...initialBackendStatus },
-    }),
+    });
+  },
 }));
