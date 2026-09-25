@@ -49,6 +49,7 @@ export default function GraphControls({
   const requestRelayout = useGraphUiStore((s) => s.requestRelayout);
 
   const [searchOpen, setSearchOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   const panToNode = (id: string) => {
     const node = reactFlow.getNode(id);
@@ -99,6 +100,20 @@ export default function GraphControls({
 
   return (
     <div className="graph-toolbar" aria-label="Graph controls">
+      {/* Collapse/expand the whole toolbar */}
+      <button
+        type="button"
+        className="graph-toolbar__toggle"
+        onClick={() => setCollapsed((c) => !c)}
+        title={collapsed ? 'Show graph tools' : 'Hide graph tools'}
+        aria-label={collapsed ? 'Show graph tools' : 'Hide graph tools'}
+        aria-expanded={!collapsed}
+      >
+        {collapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+
+      {!collapsed && (
+      <>
       {/* Search bar (toggles inline) */}
       {searchOpen && (
         <div className="graph-toolbar__group" style={{ flexDirection: 'row', alignItems: 'center', padding: '5px 8px', gap: 4 }}>
@@ -312,6 +327,8 @@ export default function GraphControls({
           <option value={3}>Calls</option>
         </select>
       </div>
+      </>
+      )}
     </div>
   );
 }

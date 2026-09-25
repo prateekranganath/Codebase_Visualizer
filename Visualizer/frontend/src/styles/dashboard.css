@@ -659,6 +659,31 @@ height:auto;
   box-shadow: var(--shadow);
 }
 
+.graph-toolbar__toggle {
+  display: grid;
+  place-items: center;
+  align-self: flex-end;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: rgba(10, 14, 22, 0.88);
+  backdrop-filter: blur(16px);
+  color: var(--muted);
+  box-shadow: var(--shadow);
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+
+.graph-toolbar__toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  border-color: var(--border-accent);
+}
+
+.graph-inspector .graph-toolbar__toggle {
+  align-self: flex-start;
+}
+
 .graph-toolbar__btn {
   display: grid;
   place-items: center;
