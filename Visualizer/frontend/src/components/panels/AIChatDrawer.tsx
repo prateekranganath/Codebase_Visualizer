@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react';
-import { X, ChevronUp, CheckCircle, Circle, Loader, Clock } from 'lucide-react';
+import { ChevronUp, ChevronDown, CheckCircle, Circle, Loader, Clock } from 'lucide-react';
 import { AiResponseSkeleton } from '../Skeleton';
 import DiffView from '../diff/DiffView';
 import type { ExplainResponseModel, ProviderInfo, TeachingResponseModel } from '../../types/backend';
@@ -13,6 +13,7 @@ type AIChatDrawerProps = {
   activeTab: AIChatDrawerTab;
   onTabChange: (tab: AIChatDrawerTab) => void;
   onClose: () => void;
+  onOpen?: () => void;
 
   // Context
   activeNodeLabel: string | null;
@@ -99,6 +100,7 @@ export default function AIChatDrawer({
   activeTab,
   onTabChange,
   onClose,
+  onOpen,
   activeNodeLabel,
   activeFilePath,
   explanation,
@@ -144,6 +146,14 @@ export default function AIChatDrawer({
 
   const contextLabel = activeNodeLabel ?? activeFilePath ?? 'No context selected';
 
+  const handleToggle = () => {
+    if (open) {
+      onClose();
+    } else {
+      onOpen?.();
+    }
+  };
+
   return (
     <div
       className={`ai-chat-drawer ${open ? 'ai-chat-drawer--open' : ''}`}
@@ -151,8 +161,15 @@ export default function AIChatDrawer({
       aria-label="AI Chat Drawer"
       aria-hidden={!open}
     >
-      {/* Handle bar */}
-      <div className="ai-chat-drawer__handle-bar">
+      {/* Handle bar — always visible; click to expand when minimized */}
+      <div
+        className={`ai-chat-drawer__handle-bar ${!open ? 'ai-chat-drawer__handle-bar--clickable' : ''}`}
+        onClick={!open ? handleToggle : undefined}
+        role={!open ? 'button' : undefined}
+        tabIndex={!open ? 0 : undefined}
+        onKeyDown={!open ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleToggle(); } } : undefined}
+        aria-label={!open ? 'Open AI panel' : undefined}
+      >
         <span className="ai-chat-drawer__handle" />
 
         {/* Tabs */}
@@ -164,7 +181,7 @@ export default function AIChatDrawer({
               role="tab"
               aria-selected={activeTab === tab}
               className={`ai-chat-drawer__tab ${activeTab === tab ? 'ai-chat-drawer__tab--active' : ''}`}
-              onClick={() => onTabChange(tab)}
+              onClick={(e) => { e.stopPropagation(); onTabChange(tab); if (!open) onOpen?.(); }}
             >
               {tab === 'explain' && '💡'}
               {tab === 'teach'   && '🎓'}
@@ -185,14 +202,15 @@ export default function AIChatDrawer({
           </span>
         </div>
 
-        {/* Close */}
+        {/* Minimize / Maximize toggle */}
         <button
           type="button"
           className="ai-chat-drawer__close"
-          onClick={onClose}
-          aria-label="Close AI drawer"
+          onClick={(e) => { e.stopPropagation(); handleToggle(); }}
+          aria-label={open ? 'Minimise AI panel' : 'Maximise AI panel'}
+          title={open ? 'Minimise' : 'Maximise'}
         >
-          <ChevronUp size={14} />
+          {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
       </div>
 

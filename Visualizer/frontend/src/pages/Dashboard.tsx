@@ -299,6 +299,7 @@ export default function Dashboard() {
           if (tab === 'explain' && !explanation) void refreshExplain();
           if (tab === 'teach' && !teaching) void refreshTeach();
         }}
+        onOpen={() => setDrawerOpen(true)}
         onClose={() => setDrawerOpen(false)}
         activeNodeLabel={activeNode?.label ?? null}
         activeFilePath={selectedFile}

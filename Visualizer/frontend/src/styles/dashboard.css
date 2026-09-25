@@ -639,12 +639,13 @@ height:auto;
    ============================================================ */
 .graph-toolbar {
   position: absolute;
-  bottom: 20px;
+  bottom: calc(var(--drawer-handle-h) + var(--statusbar-h) + 12px);
   right: 20px;
   z-index: 30;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transition: bottom var(--t-slow);
 }
 
 .graph-toolbar__group {
@@ -1182,6 +1183,17 @@ color:var(--muted);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   cursor: ns-resize;
+  user-select: none;
+}
+
+/* When the drawer is minimised the whole bar is a click target */
+.ai-chat-drawer__handle-bar--clickable {
+  cursor: pointer;
+  transition: background var(--t-fast);
+}
+
+.ai-chat-drawer__handle-bar--clickable:hover {
+  background: rgba(124, 92, 255, 0.08);
 }
 
 .ai-chat-drawer__handle {

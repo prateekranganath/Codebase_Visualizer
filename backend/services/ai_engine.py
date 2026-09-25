@@ -126,7 +126,7 @@ class LLMConfig:
 	api_key: Optional[str] = None
 	base_url: Optional[str] = None
 	timeout: float = 60.0
-	temperature: float = 0.0
+	temperature: float = 0.1
 	extra_headers: Optional[Dict[str, str]] = None
 
 def _resolve_api_key(provider: str, explicit_key: Optional[str] = None) -> Optional[str]:
@@ -277,7 +277,11 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
 			payload["tools"] = tools
 		if tool_choice:
 			payload["tool_choice"] = tool_choice
-		if reasoning:
+		# Only send reasoning for providers that support it (e.g. OpenRouter).
+		# Groq is configured as provider="openai" with a Groq base_url — sending
+		# an unsupported "reasoning" field causes a 400 Bad Request from Groq.
+		_supports_reasoning = self.config.provider.lower() == "openrouter"
+		if reasoning and _supports_reasoning:
 			payload["reasoning"] = reasoning
 
 		headers = {
@@ -296,6 +300,8 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
 
 		with httpx.Client(timeout=self.config.timeout) as client:
 			response = client.post(url, json=payload, headers=headers)
+			if not response.is_success:
+				print(f"[LLM ERROR] {response.status_code} from {url} | model={payload.get('model')} | body={response.text[:1000]}")
 			response.raise_for_status()
 			data = response.json()
 
@@ -877,6 +883,11 @@ class AIEngine:
 		max_tokens: int,
 		temperature: Optional[float] = None,
 	) -> Optional[Dict[str, Any]]:
+		# Reasoning models (e.g. GPT OSS 20B/120B on Groq) refuse to call tools
+		# when temperature=0.0 — they reason internally but don't emit a tool call,
+		# causing a 400 tool_use_failed. Use a small non-zero temperature instead.
+		if temperature is None or temperature == 0.0:
+			temperature = 0.1
 		"""Call the LLM with a forced tool call so the response shape is enforced by
 		the provider rather than begged for in the prompt. None of the configured free
 		models support response_format/structured_outputs, but all support tools.
@@ -894,7 +905,7 @@ class AIEngine:
 				},
 			}
 		]
-		tool_choice = {"type": "function", "function": {"name": tool_name}}
+		tool_choice = "auto"
 
 		def extract(resp: LLMResponse) -> Optional[Dict[str, Any]]:
 			if resp.tool_calls:
@@ -933,7 +944,6 @@ class AIEngine:
 			task=task,
 			tools=tools,
 			tool_choice=tool_choice,
-			reasoning={"enabled": False},
 			accept=lambda resp: extract(resp) is not None,
 		)
 

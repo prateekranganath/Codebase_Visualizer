@@ -57,12 +57,18 @@ async def log_response_middleware(request: Request, call_next):
 				summary = f"[{len(payload)} items]" if isinstance(payload, list) else payload
 		except Exception:
 			summary = body.decode("utf-8", errors="replace")[:2000]
-		print(f"[{request.method} {request.url.path}] {response.status_code}", summary)
+		import sys
+		encoding = sys.stdout.encoding or 'utf-8'
+		safe_summary = str(summary).encode(encoding, errors='replace').decode(encoding)
+		print(f"[{request.method} {request.url.path}] {response.status_code}", safe_summary)
 	elif body:
 		text = body.decode("utf-8", errors="replace")
 		if len(text) > 2000:
 			text = text[:2000] + "... [truncated]"
-		print(f"[{request.method} {request.url.path}] response (non-JSON):", text)
+		import sys
+		encoding = sys.stdout.encoding or 'utf-8'
+		safe_text = str(text).encode(encoding, errors='replace').decode(encoding)
+		print(f"[{request.method} {request.url.path}] response (non-JSON):", safe_text)
 	else:
 		print(f"[{request.method} {request.url.path}] response status:", response.status_code)
 

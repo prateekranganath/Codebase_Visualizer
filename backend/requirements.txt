@@ -4,7 +4,7 @@ pydantic==2.9.2
 python-multipart==0.0.9
 networkx==3.3
 graphviz==0.20.3
-pymongo==4.8.0
+pymongo>=4.9.0,<4.10.0
 motor==3.6.0
 faiss-cpu==1.8.0.post1
 sentence-transformers==3.1.1
