@@ -618,15 +618,8 @@ height:auto;
   inset: 0;
 }
 
-/* ReactFlow overrides */
-.react-flow__edges {
-  z-index: 4;
-}
-
-.react-flow__nodes {
-  z-index: 2;
-}
-
+/* ReactFlow overrides — do NOT override z-index on RF's internal layers.
+   RF v11 manages its own SVG/HTML stacking internally. */
 .react-flow__minimap {
   border-radius: var(--radius) !important;
   overflow: hidden;

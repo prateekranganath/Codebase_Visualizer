@@ -126,6 +126,7 @@ function GraphFlow({
     layoutNonce,
     toggleExpanded,
     setExpanded,
+    expandAll,
     setFocusRootId,
     setFocusedNodeId,
     resetFocus,
@@ -482,8 +483,33 @@ function GraphFlow({
     [reactFlow],
   );
 
+  // Track node IDs that were just clicked on the canvas so we don't double-pan.
+  const lastClickedRef = useRef<string | null>(null);
+
+  // When selectedNodeId changes externally (e.g. sidebar file click), pan to
+  // the node. We do NOT call setFocusedNodeId here — that activates the
+  // dim-non-focused mode which makes most edges invisible (opacity: 0.12).
+  // Sidebar selection just highlights the node via its `selected` prop and pans.
+  useEffect(() => {
+    if (!selectedNodeId) return;
+    if (lastClickedRef.current === selectedNodeId) {
+      // This change came from a canvas click — we already panned. Skip.
+      lastClickedRef.current = null;
+      return;
+    }
+    // Expand all ancestor containers so the node is visible before panning.
+    const ancestors = model.ancestorsOf(selectedNodeId);
+    if (ancestors.length > 0) {
+      expandAll(ancestors);
+    }
+    // Give layout one frame to settle after expanding, then pan.
+    window.requestAnimationFrame(() => focusOnNode(selectedNodeId));
+  }, [selectedNodeId, model, expandAll, focusOnNode]);
+
   const handleNodeClick = useCallback(
     (_: unknown, node: Node<GraphNodeUiData>) => {
+      // Mark as internally clicked so the effect above does not double-pan.
+      lastClickedRef.current = node.id;
       onNodeSelect(node.id, node.data.path);
       setFocusedNodeId(node.id);
       if (node.data.isContainer) {

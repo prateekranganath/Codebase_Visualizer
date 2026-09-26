@@ -245,6 +245,13 @@ export default function Dashboard() {
             onFileSelect={(fileName: string) => {
               setSelectedRelativePath(fileName);
               setCurrentRefactorTarget(fileName);
+              // Also select the matching graph node so it gets highlighted & panned to.
+              const matchingNode = nodes.find(
+                (n) => n.path === fileName || n.path?.endsWith('/' + fileName) || fileName.endsWith('/' + (n.path ?? '')) || n.id === fileName,
+              );
+              if (matchingNode) {
+                setSelectedNodeId(matchingNode.id);
+              }
             }}
             selectedPath={selectedFile}
             loading={loading.files}
